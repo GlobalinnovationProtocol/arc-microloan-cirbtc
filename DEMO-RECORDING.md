@@ -26,9 +26,16 @@ then shows every transaction as `[VERIFIED]` with block number and hash, and end
 5. Honest limits: no DEX router or price oracle is published for Arc yet (demo uses a fixed price and a mock router); external audit pending; `cancel()` limitation disclosed.
 
 ## Optional: real Arc Testnet transactions (needs a funded test key, see deploy/ARC-TESTNET.md)
+One command per outcome, with an explorer link per step and the output saved to `deploy\recording-<n>.txt`:
 ```powershell
-$env:DEPLOYER_PRIVATE_KEY = "0x..."          # testnet-only key funded at https://faucet.circle.com
-npx hardhat run --network arcTestnet scripts/deploy-arc-testnet.js
-$env:DEMO_CHOICE = "1"; node poc/arc-testnet-demo.js    # then "2" and "3"
+.\Record-Testnet-Demo.ps1 1     # repayment (re-runnable: the cirBTC comes back to the borrower)
+.\Record-Testnet-Demo.ps1 2     # default with deficit   (consumes 0.000033 cirBTC)
+.\Record-Testnet-Demo.ps1 3     # default with excess    (consumes 0.000033 cirBTC)
+```
+Before recording, top up the deployer `0x729FA5cfaFc9F4036E97C1464922947Eb33443D0` at https://faucet.circle.com
+(Arc Testnet): USDC for gas and cirBTC (0.0001 per request). Manual equivalent:
+```powershell
+$env:DEPLOYER_PRIVATE_KEY = (Get-Content "$env:USERPROFILE\.arc-testnet\deployer.key" -Raw).Trim()
+$env:DEMO_CHOICE = "1"; $env:DEMO_PRINCIPAL_USDC = "0.5"; node poc/arc-testnet-demo.js
 ```
 Every line then carries a https://explorer.testnet.arc.io/tx/... link Circle can open.

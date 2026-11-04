@@ -7,3 +7,4 @@ cache/
 # testnet deployment state: contains the generated borrower test key
 deploy/arc-testnet.json
 deploy/arc-testnet-demo-*.json
+deploy/recording-*.txt
