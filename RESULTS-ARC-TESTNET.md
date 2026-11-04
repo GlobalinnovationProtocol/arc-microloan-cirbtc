@@ -46,7 +46,7 @@ Full per-run data (every hash, block, terms, checks): `deploy/arc-testnet-demo-1
 **Demo & proof of work - cirBTC/USDC micro-loan on Arc**
 
 - GitHub: https://github.com/GlobalinnovationProtocol/arc-microloan-cirbtc
-- Video (terminal demo, 3 outcomes): [YOUTUBE_LINK]
+- Terminal transcript of the 3-outcome demo (run it yourself with `.\Run-Demo.ps1 1|2|3`): https://github.com/GlobalinnovationProtocol/arc-microloan-cirbtc/blob/main/DEMO-TRANSCRIPT.txt - screen recording available on request
 - Live on Arc Testnet (real USDC and real cirBTC): LoanEscrow 0x8f2Ec58364A904b5450a6F96846c567DEcE2Ee3e
   - On-time repayment, atomic (lender paid + collateral returned): https://explorer.testnet.arc.io/tx/0x34f633699f31be3bc4bd1cf20e34934276fa7096dc1cb85aad7f5ac17bc1db4e
   - Default with deficit: permissionless settle() https://explorer.testnet.arc.io/tx/0x811081f6f5daee7fe0e5172dc72e843582bd940961a9dbe106b79ba5795cb3d2 then house payDeficit() https://explorer.testnet.arc.io/tx/0x577e32bfe8c18202b700d3d942bc5a07a25baf58e969a3e5fac5cf982600bd53

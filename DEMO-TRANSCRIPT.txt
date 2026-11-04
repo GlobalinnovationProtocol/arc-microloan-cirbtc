@@ -1,0 +1,408 @@
+# Terminal transcript - Arc micro-loan demo (local Hardhat chain), 2026-11-04T16:30Z
+# Same as: .\Run-Demo.ps1 1 / 2 / 3  (production code from src/ and contracts/, mock USDC + mock cirBTC + mock router)
+
+################ OUTCOME 1 ################
+
+IMPORTANT NOTICE, DISCLAIMER AND TERMS OF USE (version 2026-10-15)
+
+Read this before continuing. By accepting you confirm that you are an adult who has the legal capacity and the right to use this service in your jurisdiction.
+
+1. NO ADVICE. This service is a software tool. It is not financial, investment, legal or tax advice. You are solely responsible for your decisions and for complying with the laws that apply to you.
+
+2. HIGH RISK. Digital assets are volatile and you can lose all or part of the value you commit. Past or modelled results do not guarantee future results.
+
+3. LOAN TERMS. One fixed loan of 1000 USDC for a single term of 6 weeks (42 days), with no extension. The borrower pays a 2.5% issuance fee to the house and 12% annual interest prorated over 42 days. Collateral is cirBTC only (Circle's natively issued bitcoin token on Arc) at a 25% loan-to-value ratio.
+
+4. BORROWER. If you do not repay principal plus interest at the end of the term, your collateral is sold on-chain for USDC by the LoanEscrow smart contract. Any proceeds above the amount owed to the lender are kept by the house, and you receive nothing back. You may lose your entire collateral.
+
+5. LENDER. Lenders are served in first-in, first-out (FIFO) order. The lender is expected to receive principal plus interest, either from the borrower or from the on-chain sale of the collateral, with any shortfall covered by the house. The house's ability to cover a shortfall is not guaranteed and is not a deposit, an insurance product or a government-backed guarantee.
+
+6. NON-CUSTODIAL. This service never holds your funds, keys, seed or secrets, and it never asks for them. Never send any. You sign every transaction yourself in your own wallet. Collateral is held only by the audited LoanEscrow smart contract, never by an operator-controlled account, and settlement at maturity is a permissionless on-chain call anyone can trigger -- no operator key ever custodies loan funds. Blockchain transactions are final and cannot be reversed.
+
+7. NO WARRANTY. The service is provided "as is" and "as available", without warranties of any kind, express or implied, including accuracy, availability, uninterrupted operation or fitness for a purpose. Prices and time come from third-party Arc network nodes and on-chain price sources that can be wrong, delayed or unavailable.
+
+8. LIMITATION OF LIABILITY. To the maximum extent permitted by law, the operator is not liable for indirect, incidental or consequential losses, lost profits, market movements, network failures, wallet or user errors, smart contract risk, or the actions of third parties.
+
+9. ELIGIBILITY AND COMPLIANCE. You must not use the service where it is prohibited or from a sanctioned jurisdiction, and you must not use it for unlawful activity.
+
+10. PRIVACY. Requests are processed in memory and cleared when the connection closes. IP addresses are kept only as keyed fingerprints for the 24-hour per-IP limit.
+
+11. CHANGES. The operator may change or suspend the service at any time without notice. These terms are a template for review by your own legal counsel and are not a substitute for legal advice.
+
+  LENDER accepted terms version 2026-10-15
+  BORROWER accepted terms version 2026-10-15
+
+== CONNECTING TO LOCAL HARDHAT NODE ==
+  (run "npx hardhat node" in another terminal first if this fails to connect)
+  deployer  0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+  house     0x70997970c51812dc3a010c7d01b50e0d17dc79c8
+  borrower  0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc
+  lender1   0x90f79bf6eb2c4f870365e785982e1f101e93b906
+  lender2   0x15d34aaf54267db7d7c367839aaf71a00a2c6a65
+  keeper    0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc  (pays settle() gas only -- no funds, no special permission)
+
+== DEPLOYING CONTRACTS (mock USDC + mock cirBTC + mock DEX router + LoanEscrow) ==
+  mock USDC        0x84eA74d481Ee0A5332c457a4d796187F6Ba67fEB
+  mock cirBTC   0x9E545E3C0baAB3E08CdfD552C960A1050f373042
+  mock DEX router  0xa82fF9aFd8f496c3d6ac40E2a0F282E47488CFc9
+  LoanEscrow       0x1613beB3B2C4f22Ee086B2b38C1476A3cE7f78E8  (one contract, collateral token is a per-loan parameter)
+
+== LIVE PRICE CHECK (this demo's block-timestamp price feed, same stability rule as production) ==
+  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793810076
+  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793810136
+  PRICE STABLE: OK
+
+Terms: {
+  principal: 1000,
+  issuanceFee: 25,
+  interest: 13.808219,
+  termDays: 42,
+  collateralAmount: 0.066667
+} | lender due 1013.808219 USDC
+
+== FUNDING (mock tokens; Hardhat Network accounts, no real funds) ==
+  [VERIFIED] mint borrower collateral
+      block 65, tx 0x412c7c4ccd40f8294cbcd8a7ef38d29c86fc67a1bda40fbae92683da770979d0
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint borrower USDC for fee+interest
+      block 66, tx 0xf1b4884e54775e949ec38fa5dd6fea51fd05f42f50777b06b16dc3aa6ba308d8
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint router USDC (so it can pay out swap proceeds on default)
+      block 67, tx 0x5a9a8de3c8df269be7e65a483ae52a0b2ecce4d3e1806ecceeb0a2d16654d691
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint house USDC (so it can cover payDeficit() if the sale falls short)
+      block 68, tx 0x4a61e37bf8031ec2ac5127d909a0678a0630fdaac65456e337a88e5b59699de5
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+== KYC AND FIFO LENDER QUEUE ==
+  approved: lender1, lender2, borrower. house/keeper are not approved.
+  unapproved address refused from the queue: lender not KYC-approved
+  [VERIFIED] mint lender1 principal
+      block 69, tx 0x1611ce08948e262cd73f6a0e82474e71995bc27f084f868e5d29e6203b2e4434
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  lender1 funded 1000.000000 USDC -> FIFO rank #1
+  [VERIFIED] mint lender2 principal
+      block 70, tx 0xbae6aecc1329337ebeba41cdf8fedc1d4fd8b33725616918b8eb7d0a4e53d468
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  lender2 funded 1000.000000 USDC -> FIFO rank #2
+  rank #1 serves the loan: lender1 (0x90f79bf6eb2c4f870365e785982e1f101e93b906); 1 still waiting
+
+== QUOTE -> LOCK (the exact unsigned payloads /loan/request returns, signed and sent here by the demo wallets) ==
+  [VERIFIED] borrower approves LoanEscrow for collateral
+      block 71, tx 0x4bf184a033a3266c4470e20efe1085d9ac3c5774f3c305296e45279af56a834a
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] borrower locks 0.066667 cirBTC collateral
+      block 72, tx 0x32dcd56d7fc55d3cf3aa9f2f93c2d3cb0c4bb3bc20a0afde4899589a1291f015
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  (24 h IP limit starts here, after this validated lock, in the real HTTP server)
+  [VERIFIED] lender -> borrower 1000.000000 USDC directly
+      block 73, tx 0x4a7834d27e7e5956c9f29d195d2ddbe8744293cc944a27f0b964d54260e45e3e
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] borrower -> house issuance fee 25.000000 USDC
+      block 74, tx 0xd3f27003245f34d5f2496ca7ac1aca8782eb1a26d9ab52f6926c435813391447
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+Outcome at the term:
+  1) Borrower repays in full
+  2) Default, sale in DEFICIT (house pays the difference)
+  3) Default, sale with EXCESS (house keeps it)
+  [VERIFIED] borrower approves LoanEscrow for repayment
+      block 75, tx 0xddad99392995f7ce4b5344ac1b055a1cb0b43b7a0b362d35071792a088d9fe16
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] borrower repays 1013.808219 USDC (principal + interest) -- atomic: lender paid and collateral returned in one call
+      block 76, tx 0xec7b945bd62ee7996e1bc2d0221d0f7fb4d266c6e70da31213a64491ac7105d4
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+== FINAL BALANCES (re-read on-chain; mock USDC) ==
+  lender     1013.808219   (net since the lock: +1013.808219)
+  borrower   0.0   (net since the lock: -1013.808219)
+  house      1038.808219   (net since the lock: +0.0)
+
+== LIVE VERIFICATION (re-read from the chain, same spirit as the XRPL build's ledger re-read) ==
+  [OK] Lender received capital + interest
+      lender change 1013.808219 USDC (expected +1013.808219)
+  [OK] Collateral returned to the borrower
+      loan status 2 (2=Repaid); borrower holds 0.066667 cirBTC
+
+2/2 final checks OK; 12/12 transactions mined and verified.
+
+################ OUTCOME 2 ################
+
+IMPORTANT NOTICE, DISCLAIMER AND TERMS OF USE (version 2026-10-15)
+
+Read this before continuing. By accepting you confirm that you are an adult who has the legal capacity and the right to use this service in your jurisdiction.
+
+1. NO ADVICE. This service is a software tool. It is not financial, investment, legal or tax advice. You are solely responsible for your decisions and for complying with the laws that apply to you.
+
+2. HIGH RISK. Digital assets are volatile and you can lose all or part of the value you commit. Past or modelled results do not guarantee future results.
+
+3. LOAN TERMS. One fixed loan of 1000 USDC for a single term of 6 weeks (42 days), with no extension. The borrower pays a 2.5% issuance fee to the house and 12% annual interest prorated over 42 days. Collateral is cirBTC only (Circle's natively issued bitcoin token on Arc) at a 25% loan-to-value ratio.
+
+4. BORROWER. If you do not repay principal plus interest at the end of the term, your collateral is sold on-chain for USDC by the LoanEscrow smart contract. Any proceeds above the amount owed to the lender are kept by the house, and you receive nothing back. You may lose your entire collateral.
+
+5. LENDER. Lenders are served in first-in, first-out (FIFO) order. The lender is expected to receive principal plus interest, either from the borrower or from the on-chain sale of the collateral, with any shortfall covered by the house. The house's ability to cover a shortfall is not guaranteed and is not a deposit, an insurance product or a government-backed guarantee.
+
+6. NON-CUSTODIAL. This service never holds your funds, keys, seed or secrets, and it never asks for them. Never send any. You sign every transaction yourself in your own wallet. Collateral is held only by the audited LoanEscrow smart contract, never by an operator-controlled account, and settlement at maturity is a permissionless on-chain call anyone can trigger -- no operator key ever custodies loan funds. Blockchain transactions are final and cannot be reversed.
+
+7. NO WARRANTY. The service is provided "as is" and "as available", without warranties of any kind, express or implied, including accuracy, availability, uninterrupted operation or fitness for a purpose. Prices and time come from third-party Arc network nodes and on-chain price sources that can be wrong, delayed or unavailable.
+
+8. LIMITATION OF LIABILITY. To the maximum extent permitted by law, the operator is not liable for indirect, incidental or consequential losses, lost profits, market movements, network failures, wallet or user errors, smart contract risk, or the actions of third parties.
+
+9. ELIGIBILITY AND COMPLIANCE. You must not use the service where it is prohibited or from a sanctioned jurisdiction, and you must not use it for unlawful activity.
+
+10. PRIVACY. Requests are processed in memory and cleared when the connection closes. IP addresses are kept only as keyed fingerprints for the 24-hour per-IP limit.
+
+11. CHANGES. The operator may change or suspend the service at any time without notice. These terms are a template for review by your own legal counsel and are not a substitute for legal advice.
+
+  LENDER accepted terms version 2026-10-15
+  BORROWER accepted terms version 2026-10-15
+
+== CONNECTING TO LOCAL HARDHAT NODE ==
+  (run "npx hardhat node" in another terminal first if this fails to connect)
+  deployer  0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+  house     0x70997970c51812dc3a010c7d01b50e0d17dc79c8
+  borrower  0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc
+  lender1   0x90f79bf6eb2c4f870365e785982e1f101e93b906
+  lender2   0x15d34aaf54267db7d7c367839aaf71a00a2c6a65
+  keeper    0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc  (pays settle() gas only -- no funds, no special permission)
+
+== DEPLOYING CONTRACTS (mock USDC + mock cirBTC + mock DEX router + LoanEscrow) ==
+  mock USDC        0x99bbA657f2BbC93c02D617f8bA121cB8Fc104Acf
+  mock cirBTC   0x0E801D84Fa97b50751Dbf25036d067dCf18858bF
+  mock DEX router  0x8f86403A4DE0BB5791fa46B8e795C547942fE4Cf
+  LoanEscrow       0x9d4454B023096f34B160D6B654540c56A1F81688  (one contract, collateral token is a per-loan parameter)
+
+== LIVE PRICE CHECK (this demo's block-timestamp price feed, same stability rule as production) ==
+  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793810157
+  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793810217
+  PRICE STABLE: OK
+
+Terms: {
+  principal: 1000,
+  issuanceFee: 25,
+  interest: 13.808219,
+  termDays: 42,
+  collateralAmount: 0.066667
+} | lender due 1013.808219 USDC
+
+== FUNDING (mock tokens; Hardhat Network accounts, no real funds) ==
+  [VERIFIED] mint borrower collateral
+      block 82, tx 0x13686e64983b6e23d53c74e9ba98fcb6be505cc081261d0aa3e1f33554869876
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint borrower USDC for fee+interest
+      block 83, tx 0xca8dbb8048ff862ebb0baddca6eb7304b7fe677535d28d3db798b694002656c2
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint router USDC (so it can pay out swap proceeds on default)
+      block 84, tx 0xccf86de4000d01f4345168c5077d3f70d5dc6bede2bf49a8b8146ea596315733
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint house USDC (so it can cover payDeficit() if the sale falls short)
+      block 85, tx 0xac40f2c90a388ee2c85b012b91430c2c85b0b6583b151b2cb62d275676bc6ac1
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+== KYC AND FIFO LENDER QUEUE ==
+  approved: lender1, lender2, borrower. house/keeper are not approved.
+  unapproved address refused from the queue: lender not KYC-approved
+  [VERIFIED] mint lender1 principal
+      block 86, tx 0xc973f61fc76ee456d9165c16788c44b70fb63dca634fb02858888750bb0ed3da
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  lender1 funded 1000.000000 USDC -> FIFO rank #1
+  [VERIFIED] mint lender2 principal
+      block 87, tx 0x6044100a74533eaa9046d3bb7158b92924e7ccc89ee4acb3b81b7b103ea058e3
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  lender2 funded 1000.000000 USDC -> FIFO rank #2
+  rank #1 serves the loan: lender1 (0x90f79bf6eb2c4f870365e785982e1f101e93b906); 1 still waiting
+
+== QUOTE -> LOCK (the exact unsigned payloads /loan/request returns, signed and sent here by the demo wallets) ==
+  [VERIFIED] borrower approves LoanEscrow for collateral
+      block 88, tx 0x2514e2d1df39e884aed6c92eabe4fd339075ca803d525a40188277eff27b8d01
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] borrower locks 0.066667 cirBTC collateral
+      block 89, tx 0x67ee8bc5ec8aef5b2ce2d56e99dea162354d85f04b470a4eaba39593b5ee2cf1
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  (24 h IP limit starts here, after this validated lock, in the real HTTP server)
+  [VERIFIED] lender -> borrower 1000.000000 USDC directly
+      block 90, tx 0x52155c7580ff12902bc51981fea5be64fa0e7e75bedc40080b13c70698c2922f
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] borrower -> house issuance fee 25.000000 USDC
+      block 91, tx 0xd0f9a1fe70fff62ee6a2b70a865437ef8fc2c36d97f2ceace2d72d22f866f62b
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+Outcome at the term:
+  1) Borrower repays in full
+  2) Default, sale in DEFICIT (house pays the difference)
+  3) Default, sale with EXCESS (house keeps it)
+
+Default. Modelled on-chain sale price 12000.000000 (-80% vs quoted) on 0.066667 cirBTC
+  Expected settlement, line by line (USDC):
+    Lender receives            1013.808219  (capital + interest)
+    House pays the deficit     213.804219  (via payDeficit(), a manual house-triggered call)
+    House keeps the excess     0.000000
+    Borrower receives          0.000000  (collateral is lost; the loan principal is not repaid)
+  [VERIFIED] set mock DEX rate so the swap clears at ~12000.000000 USDC per cirBTC
+      block 92, tx 0xd97ae1054a1edf5d401b861da716965365f3fc4f5327dbc51039bfcfcc655ac0
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  finish-after: 15s of simulated time remaining
+  finish-after: 10s of simulated time remaining
+  finish-after: 4s of simulated time remaining
+  [VERIFIED] settle() -- permissionless: this demo's "keeper" account pays gas only, holds no funds, has no special contract permission
+      block 96, tx 0x803eb65f0fe27f6cc0b15da6450b8e2606dc43244c98d91daaf6bb0992e4aa27
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  DeficitRecorded: 213.804219 USDC owed by the house
+  [VERIFIED] house approves LoanEscrow for the deficit
+      block 97, tx 0x68e3405a9e3340e8f34fc36a43237d48065f6e6fbcedbf7c5cc43a547ad3c01e
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] house pays the deficit (payDeficit) -- the human-in-the-loop control
+      block 98, tx 0xd0be24eedef748716206765568097868d2739f1a991f67f9b821eeb3a9c97890
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+== FINAL BALANCES (re-read on-chain; mock USDC) ==
+  lender     1013.808219   (net since the lock: +1013.808219)
+  borrower   1013.808219   (net since the lock: +0.0)
+  house      825.004   (net since the lock: -213.804219)
+
+== LIVE VERIFICATION (re-read from the chain, same spirit as the XRPL build's ledger re-read) ==
+  [OK] Lender received capital + interest
+      lender change 1013.808219 USDC (expected +1013.808219)
+  [OK] House paid the deficit
+      house change -213.804219 USDC (expected -213.804219)
+  [OK] Collateral sold on-chain, nothing returned to the borrower
+      loan status 3 (3=Settled); borrower holds 0.0 cirBTC
+
+3/3 final checks OK; 14/14 transactions mined and verified.
+
+################ OUTCOME 3 ################
+
+IMPORTANT NOTICE, DISCLAIMER AND TERMS OF USE (version 2026-10-15)
+
+Read this before continuing. By accepting you confirm that you are an adult who has the legal capacity and the right to use this service in your jurisdiction.
+
+1. NO ADVICE. This service is a software tool. It is not financial, investment, legal or tax advice. You are solely responsible for your decisions and for complying with the laws that apply to you.
+
+2. HIGH RISK. Digital assets are volatile and you can lose all or part of the value you commit. Past or modelled results do not guarantee future results.
+
+3. LOAN TERMS. One fixed loan of 1000 USDC for a single term of 6 weeks (42 days), with no extension. The borrower pays a 2.5% issuance fee to the house and 12% annual interest prorated over 42 days. Collateral is cirBTC only (Circle's natively issued bitcoin token on Arc) at a 25% loan-to-value ratio.
+
+4. BORROWER. If you do not repay principal plus interest at the end of the term, your collateral is sold on-chain for USDC by the LoanEscrow smart contract. Any proceeds above the amount owed to the lender are kept by the house, and you receive nothing back. You may lose your entire collateral.
+
+5. LENDER. Lenders are served in first-in, first-out (FIFO) order. The lender is expected to receive principal plus interest, either from the borrower or from the on-chain sale of the collateral, with any shortfall covered by the house. The house's ability to cover a shortfall is not guaranteed and is not a deposit, an insurance product or a government-backed guarantee.
+
+6. NON-CUSTODIAL. This service never holds your funds, keys, seed or secrets, and it never asks for them. Never send any. You sign every transaction yourself in your own wallet. Collateral is held only by the audited LoanEscrow smart contract, never by an operator-controlled account, and settlement at maturity is a permissionless on-chain call anyone can trigger -- no operator key ever custodies loan funds. Blockchain transactions are final and cannot be reversed.
+
+7. NO WARRANTY. The service is provided "as is" and "as available", without warranties of any kind, express or implied, including accuracy, availability, uninterrupted operation or fitness for a purpose. Prices and time come from third-party Arc network nodes and on-chain price sources that can be wrong, delayed or unavailable.
+
+8. LIMITATION OF LIABILITY. To the maximum extent permitted by law, the operator is not liable for indirect, incidental or consequential losses, lost profits, market movements, network failures, wallet or user errors, smart contract risk, or the actions of third parties.
+
+9. ELIGIBILITY AND COMPLIANCE. You must not use the service where it is prohibited or from a sanctioned jurisdiction, and you must not use it for unlawful activity.
+
+10. PRIVACY. Requests are processed in memory and cleared when the connection closes. IP addresses are kept only as keyed fingerprints for the 24-hour per-IP limit.
+
+11. CHANGES. The operator may change or suspend the service at any time without notice. These terms are a template for review by your own legal counsel and are not a substitute for legal advice.
+
+  LENDER accepted terms version 2026-10-15
+  BORROWER accepted terms version 2026-10-15
+
+== CONNECTING TO LOCAL HARDHAT NODE ==
+  (run "npx hardhat node" in another terminal first if this fails to connect)
+  deployer  0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+  house     0x70997970c51812dc3a010c7d01b50e0d17dc79c8
+  borrower  0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc
+  lender1   0x90f79bf6eb2c4f870365e785982e1f101e93b906
+  lender2   0x15d34aaf54267db7d7c367839aaf71a00a2c6a65
+  keeper    0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc  (pays settle() gas only -- no funds, no special permission)
+
+== DEPLOYING CONTRACTS (mock USDC + mock cirBTC + mock DEX router + LoanEscrow) ==
+  mock USDC        0xCD8a1C3ba11CF5ECfa6267617243239504a98d90
+  mock cirBTC   0x82e01223d51Eb87e16A03E24687EDF0F294da6f1
+  mock DEX router  0x2bdCC0de6bE1f7D2ee689a0342D76F52E8EFABa3
+  LoanEscrow       0x7969c5eD335650692Bc04293B07F5BF2e7A673C0  (one contract, collateral token is a per-loan parameter)
+
+== LIVE PRICE CHECK (this demo's block-timestamp price feed, same stability rule as production) ==
+  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793810253
+  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793810313
+  PRICE STABLE: OK
+
+Terms: {
+  principal: 1000,
+  issuanceFee: 25,
+  interest: 13.808219,
+  termDays: 42,
+  collateralAmount: 0.066667
+} | lender due 1013.808219 USDC
+
+== FUNDING (mock tokens; Hardhat Network accounts, no real funds) ==
+  [VERIFIED] mint borrower collateral
+      block 104, tx 0x89a67d049c5a970df62cf44e09745502fbdd7da68fbdd8d6546510aa2c7d6924
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint borrower USDC for fee+interest
+      block 105, tx 0xc6b3f47cbc6dbc9a19b2219d7b5d27a82977d7d326d03c55122f9e1f4dcb56d1
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint router USDC (so it can pay out swap proceeds on default)
+      block 106, tx 0x20d878a246bf8961112cff48e2404c65ee1f7e74f0cbd8a2a31917202c1554d3
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] mint house USDC (so it can cover payDeficit() if the sale falls short)
+      block 107, tx 0xc997ef5769bfda5050fd45759e2125f14063ea865a2de5e1e05962dac35c2707
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+== KYC AND FIFO LENDER QUEUE ==
+  approved: lender1, lender2, borrower. house/keeper are not approved.
+  unapproved address refused from the queue: lender not KYC-approved
+  [VERIFIED] mint lender1 principal
+      block 108, tx 0x99ee2366d38fe2631d0de2633fe3dafdbb4273a6ca8a2485da6360e3accfc364
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  lender1 funded 1000.000000 USDC -> FIFO rank #1
+  [VERIFIED] mint lender2 principal
+      block 109, tx 0xb61f2a9e631cecb536d518bbb52ac9d84de41598446d459afbf31d0d910444cf
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  lender2 funded 1000.000000 USDC -> FIFO rank #2
+  rank #1 serves the loan: lender1 (0x90f79bf6eb2c4f870365e785982e1f101e93b906); 1 still waiting
+
+== QUOTE -> LOCK (the exact unsigned payloads /loan/request returns, signed and sent here by the demo wallets) ==
+  [VERIFIED] borrower approves LoanEscrow for collateral
+      block 110, tx 0x94d11d8c76ab545c559b548c630ec7086c6624dda30c45f316eef53dac1b5cfa
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] borrower locks 0.066667 cirBTC collateral
+      block 111, tx 0xf318e4c6e29f0030b4a1d5a482656f03e26691ca194baf18f811c7e73bebbc1d
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  (24 h IP limit starts here, after this validated lock, in the real HTTP server)
+  [VERIFIED] lender -> borrower 1000.000000 USDC directly
+      block 112, tx 0xfae61c6029aef65831eae4a80e5de37d2648d0265a8c9e78cbe1fe37c37ffce3
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  [VERIFIED] borrower -> house issuance fee 25.000000 USDC
+      block 113, tx 0x6399ce21f3f108efcf4ac5781b0066a0f8db4931b40870a805bc85f7b0d2da64
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+Outcome at the term:
+  1) Borrower repays in full
+  2) Default, sale in DEFICIT (house pays the difference)
+  3) Default, sale with EXCESS (house keeps it)
+
+Default. Modelled on-chain sale price 66000.000000 (+10% vs quoted) on 0.066667 cirBTC
+  Expected settlement, line by line (USDC):
+    Lender receives            1013.808219  (capital + interest)
+    House pays the deficit     0.000000  (via payDeficit(), a manual house-triggered call)
+    House keeps the excess     3386.213781
+    Borrower receives          0.000000  (collateral is lost; the loan principal is not repaid)
+  [VERIFIED] set mock DEX rate so the swap clears at ~66000.000000 USDC per cirBTC
+      block 114, tx 0x6e6136f5d63c3866a6ca50254694c5a1953c05de7443afe825d1f46fb94bde5b
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+  finish-after: 15s of simulated time remaining
+  finish-after: 10s of simulated time remaining
+  finish-after: 5s of simulated time remaining
+  [VERIFIED] settle() -- permissionless: this demo's "keeper" account pays gas only, holds no funds, has no special contract permission
+      block 118, tx 0x3f03c1c569222ac4ad9f995d5fff6500903a8587a4588c633d235053267a636e
+      (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
+
+== FINAL BALANCES (re-read on-chain; mock USDC) ==
+  lender     1013.808219   (net since the lock: +1013.808219)
+  borrower   1013.808219   (net since the lock: +0.0)
+  house      4425.022   (net since the lock: +3386.213781)
+
+== LIVE VERIFICATION (re-read from the chain, same spirit as the XRPL build's ledger re-read) ==
+  [OK] Lender received capital + interest
+      lender change 1013.808219 USDC (expected +1013.808219)
+  [OK] House kept the excess
+      house change 3386.213781 USDC (expected +3386.213781)
+  [OK] Collateral sold on-chain, nothing returned to the borrower
+      loan status 3 (3=Settled); borrower holds 0.0 cirBTC
+
+3/3 final checks OK; 12/12 transactions mined and verified.
