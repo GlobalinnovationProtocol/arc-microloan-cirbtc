@@ -1,0 +1,38 @@
+[Unit]
+Description=D-kyc Arc micro-loan server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Project root on this operator's VPS. Adjust to wherever this repository is deployed.
+WorkingDirectory=/opt/d-kyc
+ExecStart=/usr/bin/node --max-old-space-size=2048 --expose-gc src/server.js
+Restart=on-failure
+RestartSec=5
+
+# Public config only -- no signing secrets here. Set HOUSE_ADDRESS and ARC_RPC_URL in this file.
+EnvironmentFile=/etc/d-kyc/d-kyc.env
+Environment=KYC_FILE=/etc/d-kyc/kyc-approved.txt
+Environment=TRUST_PROXY=1
+Environment=PORT=8080
+
+# Optional ("-" prefix: the unit still starts if this file is absent). Unlike H-kyc's fee wallet,
+# this key holds no funds and has no special contract permission -- settle()/payDeficit() are
+# either permissionless or house-only by on-chain address check, not by possession of this key. It
+# only pays its own gas to call the permissionless settle() sweep (src/settlement/settle.js) once a
+# loan matures (src/chain.js loadKeeperWallet() reads KEEPER_PRIVATE_KEY from the process
+# environment directly, so this is a plain env file, not a systemd LoadCredential). Omit the file
+# entirely to run with quoting/confirming only and settle loans manually from any wallet instead --
+# nothing in this deployment depends on it existing. File contents: a single line
+# "KEEPER_PRIVATE_KEY=0x...", mode 0600, owned by this unit's runtime user.
+EnvironmentFile=-/etc/d-kyc/keeper.env
+
+# Sandboxing: the server never needs to write to the filesystem at runtime.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

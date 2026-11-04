@@ -1,0 +1,182 @@
+import { expect } from "chai";
+import hre from "hardhat";
+
+const { ethers } = hre;
+
+async function deployFixture() {
+  const [deployer, borrower, lender, house, keeper] = await ethers.getSigners();
+
+  const MockERC20 = await ethers.getContractFactory("MockERC20");
+  const usdc = await MockERC20.deploy("Mock USDC", "mUSDC", 6);
+  const collateral = await MockERC20.deploy("Mock cirBTC", "mcirBTC", 8);
+
+  const MockDexRouter = await ethers.getContractFactory("MockDexRouter");
+  const router = await MockDexRouter.deploy();
+
+  const LoanEscrow = await ethers.getContractFactory("LoanEscrow");
+  const escrow = await LoanEscrow.deploy(await usdc.getAddress(), await router.getAddress());
+
+  // Fund the router so it can pay out swap proceeds, and the borrower/lender with what they need.
+  await usdc.mint(await router.getAddress(), ethers.parseUnits("1000000", 6));
+  await collateral.mint(await borrower.getAddress(), ethers.parseUnits("10000", 8));
+  await usdc.mint(await borrower.getAddress(), ethers.parseUnits("10000", 6));
+  await usdc.mint(await house.getAddress(), ethers.parseUnits("10000", 6));
+
+  return { deployer, borrower, lender, house, keeper, usdc, collateral, router, escrow };
+}
+
+const DAY = 24 * 60 * 60;
+const RATE_SCALE = 10n ** 10n; // 18 - 8 decimals (see MockDexRouter rate convention)
+
+function loanId(label) {
+  return ethers.keccak256(ethers.toUtf8Bytes(label));
+}
+
+function condition() {
+  const preimage = ethers.randomBytes(32);
+  const hash = ethers.keccak256(preimage);
+  return { preimage: ethers.hexlify(preimage), hash };
+}
+
+async function lockLoan({ escrow, collateral, borrower, lender, house }, { id, collateralAmount, usdcDue, finishIn = DAY, cancelGrace = 3 * DAY }) {
+  const { preimage, hash } = condition();
+  const now = await ethers.provider.getBlock("latest").then((b) => b.timestamp);
+  const finishAfter = now + finishIn;
+  const cancelAfter = finishAfter + cancelGrace;
+
+  await collateral.connect(borrower).approve(await escrow.getAddress(), collateralAmount);
+  await escrow.connect(borrower).lock(
+    id, await collateral.getAddress(), collateralAmount,
+    await lender.getAddress(), await house.getAddress(), usdcDue, hash, finishAfter, cancelAfter,
+  );
+  return { preimage, finishAfter, cancelAfter };
+}
+
+describe("LoanEscrow", () => {
+  it("lock -> repay: lender is paid, collateral returns to the borrower, status is terminal", async () => {
+    const f = await deployFixture();
+    const id = loanId("repay-1");
+    const collateralAmount = ethers.parseUnits("2000", 8);
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+    await lockLoan(f, { id, collateralAmount, usdcDue });
+
+    await f.usdc.connect(f.borrower).approve(await f.escrow.getAddress(), usdcDue);
+    await expect(f.escrow.connect(f.borrower).repay(id)).to.emit(f.escrow, "Repaid").withArgs(id);
+
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(usdcDue);
+    expect(await f.collateral.balanceOf(await f.borrower.getAddress())).to.equal(ethers.parseUnits("10000", 8));
+
+    await expect(f.escrow.connect(f.borrower).repay(id)).to.be.revertedWith("not locked");
+  });
+
+  it("lock -> default -> settle with excess: lender made whole, house receives the surplus", async () => {
+    const f = await deployFixture();
+    // MockDexRouter computes amountOut = amountIn * rate / 1e18. Collateral (cirBTC) is 8-decimal,
+    // so the rate is scaled by 1e10 (RATE_SCALE) for "rate" to still mean USDC per whole collateral unit;
+    // USDC is 6-decimal, so the rate must be scaled to the *output* token's decimals (1e6),
+    // not 1e18, for "rate" to mean "USDC per whole collateral unit".
+    await f.router.setRate(ethers.parseUnits("2", 6) * RATE_SCALE); // 1 collateral -> 2 USDC
+    const id = loanId("default-excess-1");
+    const collateralAmount = ethers.parseUnits("2000", 8); // worth 4000 USDC at rate 2
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+    const { preimage, finishAfter } = await lockLoan(f, { id, collateralAmount, usdcDue });
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [finishAfter + 1]);
+    await ethers.provider.send("evm_mine", []);
+
+    const path = [await f.collateral.getAddress(), await f.usdc.getAddress()];
+    const deadline = finishAfter + DAY;
+    await expect(f.escrow.connect(f.keeper).settle(id, preimage, 0n, path, deadline))
+      .to.emit(f.escrow, "Settled");
+
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(usdcDue);
+    const expectedProceeds = ethers.parseUnits("4000", 6);
+    const expectedExcess = expectedProceeds - usdcDue;
+    expect(await f.usdc.balanceOf(await f.house.getAddress())).to.equal(ethers.parseUnits("10000", 6) + expectedExcess);
+    expect(await f.escrow.deficits(id)).to.equal(0n);
+  });
+
+  it("lock -> default -> settle with deficit -> payDeficit: lender gets the shortfall only when the house pays it", async () => {
+    const f = await deployFixture();
+    await f.router.setRate(ethers.parseUnits("0.1", 6) * RATE_SCALE); // 1 collateral -> 0.1 USDC (collapsed price)
+    const id = loanId("default-deficit-1");
+    const collateralAmount = ethers.parseUnits("2000", 8); // worth 200 USDC at rate 0.1
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+    const { preimage, finishAfter } = await lockLoan(f, { id, collateralAmount, usdcDue });
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [finishAfter + 1]);
+    await ethers.provider.send("evm_mine", []);
+
+    const path = [await f.collateral.getAddress(), await f.usdc.getAddress()];
+    await expect(f.escrow.connect(f.keeper).settle(id, preimage, 0n, path, finishAfter + DAY))
+      .to.emit(f.escrow, "DeficitRecorded");
+
+    const proceeds = ethers.parseUnits("200", 6);
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(proceeds);
+    const shortfall = usdcDue - proceeds;
+    expect(await f.escrow.deficits(id)).to.equal(shortfall);
+
+    await expect(f.escrow.connect(f.borrower).payDeficit(id)).to.be.revertedWith("only house");
+
+    await f.usdc.connect(f.house).approve(await f.escrow.getAddress(), shortfall);
+    await expect(f.escrow.connect(f.house).payDeficit(id)).to.emit(f.escrow, "DeficitPaid").withArgs(id, shortfall);
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(usdcDue);
+    expect(await f.escrow.deficits(id)).to.equal(0n);
+
+    await expect(f.escrow.connect(f.house).payDeficit(id)).to.be.revertedWith("no deficit");
+  });
+
+  it("lock -> cancel: an unsettled loan's collateral returns to the (defaulting) borrower after cancelAfter -- the disclosed limitation", async () => {
+    const f = await deployFixture();
+    const id = loanId("cancel-1");
+    const collateralAmount = ethers.parseUnits("2000", 8);
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+    const { cancelAfter } = await lockLoan(f, { id, collateralAmount, usdcDue });
+
+    await expect(f.escrow.cancel(id)).to.be.revertedWith("too early");
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [cancelAfter + 1]);
+    await ethers.provider.send("evm_mine", []);
+
+    await expect(f.escrow.cancel(id)).to.emit(f.escrow, "Cancelled").withArgs(id);
+    expect(await f.collateral.balanceOf(await f.borrower.getAddress())).to.equal(ethers.parseUnits("10000", 8));
+    await expect(f.escrow.cancel(id)).to.be.revertedWith("not locked");
+  });
+
+  it("settle() rejects a loan that has not yet matured, a wrong preimage, and a path not ending in USDC", async () => {
+    const f = await deployFixture();
+    const id = loanId("guard-1");
+    const collateralAmount = ethers.parseUnits("2000", 8);
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+    const { preimage, finishAfter } = await lockLoan(f, { id, collateralAmount, usdcDue });
+
+    const path = [await f.collateral.getAddress(), await f.usdc.getAddress()];
+    await expect(f.escrow.settle(id, preimage, 0n, path, finishAfter + DAY)).to.be.revertedWith("not matured");
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [finishAfter + 1]);
+    await ethers.provider.send("evm_mine", []);
+
+    await expect(f.escrow.settle(id, ethers.hexlify(ethers.randomBytes(32)), 0n, path, finishAfter + DAY))
+      .to.be.revertedWith("bad preimage");
+    await expect(f.escrow.settle(id, preimage, 0n, [await f.collateral.getAddress(), await f.collateral.getAddress()], finishAfter + DAY))
+      .to.be.revertedWith("bad path");
+  });
+
+  it("a second lock() with the same loanId is refused (no overwrite of an in-flight loan)", async () => {
+    const f = await deployFixture();
+    const id = loanId("dup-1");
+    const collateralAmount = ethers.parseUnits("2000", 8);
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+    await lockLoan(f, { id, collateralAmount, usdcDue });
+
+    await f.collateral.mint(await f.borrower.getAddress(), collateralAmount);
+    await f.collateral.connect(f.borrower).approve(await f.escrow.getAddress(), collateralAmount);
+    await expect(
+      f.escrow.connect(f.borrower).lock(
+        id, await f.collateral.getAddress(), collateralAmount,
+        await f.lender.getAddress(), await f.house.getAddress(), usdcDue,
+        ethers.keccak256(ethers.randomBytes(32)), (await ethers.provider.getBlock("latest")).timestamp + DAY, (await ethers.provider.getBlock("latest")).timestamp + 4 * DAY,
+      ),
+    ).to.be.revertedWith("loan exists");
+  });
+});

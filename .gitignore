@@ -1,0 +1,9 @@
+node_modules/
+artifacts/
+cache/
+*.log
+.env
+.env.*
+# testnet deployment state: contains the generated borrower test key
+deploy/arc-testnet.json
+deploy/arc-testnet-demo-*.json
