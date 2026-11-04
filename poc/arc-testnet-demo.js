@@ -75,7 +75,10 @@ const f = await fees();
 if ((await provider.getBalance(borrower.address)) < parseUnits("0.3", 18)) await send("gas (native USDC) deployer -> borrower", deployer.sendTransaction({ to: borrower.address, value: parseUnits("0.5", 18), ...f }));
 await send("USDC deployer -> borrower (fee + interest)", usdc.transfer(borrower.address, collateralUnits(terms.issuanceFee + terms.interest, UD), f));
 if (cfg.collateralIsMock) await send("mint mock cirBTC to borrower", collateral.mint(borrower.address, collateralWei, f));
-else if ((await collateral.balanceOf(borrower.address)) < collateralWei) throw new Error(`borrower needs ${terms.collateralAmount} real cirBTC at ${borrower.address}`);
+else if ((await collateral.balanceOf(borrower.address)) < collateralWei) {
+  if ((await collateral.balanceOf(deployer.address)) < collateralWei) throw new Error(`need ${terms.collateralAmount} real cirBTC on ${deployer.address} or ${borrower.address}`);
+  await send(`real cirBTC deployer -> borrower (${terms.collateralAmount})`, collateral.transfer(borrower.address, collateralWei, f));
+}
 if (CHOICE !== "1") await send("USDC deployer -> mock router (so it can pay swap proceeds)", usdc.transfer(cfg.router, collateralUnits(Math.ceil(terms.collateralAmount * second.price * 1.2 * 1e6) / 1e6, UD), f));
 
 console.log("\n== QUOTE -> LOCK (production calldata, signed by the borrower) ==");
