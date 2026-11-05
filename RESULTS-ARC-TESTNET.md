@@ -17,6 +17,22 @@ Demo scaling (disclosed): principal 0.5 USDC instead of 1000 so faucet funds suf
 (2.5 % fee = 0.0125, 12 %/yr over 42 days = 0.006904 interest, 25 % LTV -> 0.000033 cirBTC at a fixed demo price of
 60 000 USDC/cirBTC). Maturity set to ~2 minutes instead of 42 days.
 
+## Contract v2 - lender funding atomic with lock() (deployed 2026-11-05)
+
+After the three runs above (contract v1: lender paid the borrower in a separate transaction), `lock()` was changed so the
+lender's 1000 USDC is pulled in the same transaction as the collateral (975 to the borrower, 25 fee to the house); the
+lender's USDC allowance to the escrow is now their revocable FIFO commitment, and the server checks live allowance **and**
+balance before quoting (skipping lenders who moved funds out). v2 is deployed on Arc Testnet:
+
+| Contract | Address |
+|---|---|
+| LoanEscrow **v2** | [0x859923Aa1c3E4b9660baE84AE64e1701De41650C](https://explorer.testnet.arc.io/address/0x859923Aa1c3E4b9660baE84AE64e1701De41650C) - deploy tx [0xedfe3eb9…](https://explorer.testnet.arc.io/tx/0xedfe3eb921d4c6ec9e3962a615e9a0f82de1aeb80dc9f96f5e24e899310cf0f2) |
+| MockDexRouter (v2 run) | [0xB5ecbF16765A66627C524E4d70C3111dEcCCb321](https://explorer.testnet.arc.io/address/0xB5ecbF16765A66627C524E4d70C3111dEcCCb321) |
+
+Tests: 9 Hardhat contract tests (incl. atomic funding, revert when the lender lacks allowance/balance) and 33 JS tests
+(incl. `test/fifo.test.js`) pass. The v2 outcomes will be recorded on Testnet with `Record-Testnet-Demo.ps1` once the
+deployer is topped up with faucet cirBTC; the v1 runs below remain valid evidence of the escrow/settlement paths.
+
 ## Outcome 1 - borrower repays on time (9/9 tx, checks: status Repaid ✓, collateral back to borrower ✓)
 - borrower approves LoanEscrow for cirBTC: [0x2eddd67e…](https://explorer.testnet.arc.io/tx/0x2eddd67ef9888dd0ef9db760cdc061193a3e64713bcdef591c547d46a79ba1a5)
 - **borrower locks 0.000033 cirBTC**: [0x80a72b31…](https://explorer.testnet.arc.io/tx/0x80a72b3113df49894593ba021bc67d090c11b26031a7880eb659c1e30ed8ad6b)
@@ -47,7 +63,7 @@ Full per-run data (every hash, block, terms, checks): `deploy/arc-testnet-demo-1
 
 - GitHub: https://github.com/GlobalinnovationProtocol/arc-microloan-cirbtc
 - Terminal transcript of the 3-outcome demo (run it yourself with `.\Run-Demo.ps1 1|2|3`): https://github.com/GlobalinnovationProtocol/arc-microloan-cirbtc/blob/main/DEMO-TRANSCRIPT.txt - screen recording available on request
-- Live on Arc Testnet (real USDC and real cirBTC): LoanEscrow 0x8f2Ec58364A904b5450a6F96846c567DEcE2Ee3e
+- Live on Arc Testnet (real USDC and real cirBTC): LoanEscrow v1 0x8f2Ec58364A904b5450a6F96846c567DEcE2Ee3e (runs below), v2 with atomic lender funding 0x859923Aa1c3E4b9660baE84AE64e1701De41650C
   - On-time repayment, atomic (lender paid + collateral returned): https://explorer.testnet.arc.io/tx/0x34f633699f31be3bc4bd1cf20e34934276fa7096dc1cb85aad7f5ac17bc1db4e
   - Default with deficit: permissionless settle() https://explorer.testnet.arc.io/tx/0x811081f6f5daee7fe0e5172dc72e843582bd940961a9dbe106b79ba5795cb3d2 then house payDeficit() https://explorer.testnet.arc.io/tx/0x577e32bfe8c18202b700d3d942bc5a07a25baf58e969a3e5fac5cf982600bd53
   - Default with excess: settle() https://explorer.testnet.arc.io/tx/0xd9b4d95defd8d2b143de47527fc89c24c5c29a5466315e74d3c567fd885290fb

@@ -55,6 +55,7 @@ contract LoanEscrow {
     bool private _entered;
 
     event Locked(bytes32 indexed loanId, address indexed borrower, address indexed lender, address collateralToken, uint256 collateralAmount);
+    event Funded(bytes32 indexed loanId, address indexed lender, uint256 principal, uint256 issuanceFee);
     event Repaid(bytes32 indexed loanId);
     event Settled(bytes32 indexed loanId, uint256 proceeds);
     event DeficitRecorded(bytes32 indexed loanId, uint256 amount);
@@ -74,15 +75,21 @@ contract LoanEscrow {
         dexRouter = IDexRouter(dexRouterAddress);
     }
 
-    /// Borrower locks collateral for one loan. Caller must have approved this contract for at
-    /// least collateralAmount of collateralToken beforehand. loanId is chosen off-chain (the
-    /// server's loan session id) and must be unused.
+    /// Borrower locks collateral and the lender's funding settles in the same transaction: the
+    /// borrower must have approved collateralAmount of collateralToken, the lender must have approved
+    /// `principal` USDC to this contract. principal - issuanceFee goes to the borrower and issuanceFee
+    /// to the house. If any leg fails the whole call reverts, so a loan can never exist half-done
+    /// (collateral locked but unfunded, or funded but uncollateralised). The lender's USDC allowance is
+    /// therefore their revocable FIFO commitment: approving 0 withdraws it. loanId is chosen off-chain
+    /// (the server's loan session id) and must be unused.
     function lock(
         bytes32 loanId,
         address collateralToken,
         uint256 collateralAmount,
         address lender,
         address house,
+        uint256 principal,
+        uint256 issuanceFee,
         uint256 usdcDue,
         bytes32 conditionHash,
         uint64 finishAfter,
@@ -90,7 +97,9 @@ contract LoanEscrow {
     ) external nonReentrant {
         require(loans[loanId].status == Status.None, "loan exists");
         require(collateralToken != address(0) && lender != address(0) && house != address(0), "zero address");
+        require(lender != msg.sender, "lender is borrower");
         require(collateralAmount > 0 && usdcDue > 0, "zero amount");
+        require(principal > issuanceFee && usdcDue >= principal, "bad principal");
         require(finishAfter > block.timestamp, "finishAfter in the past");
         require(cancelAfter > finishAfter, "cancelAfter must follow finishAfter");
 
@@ -108,7 +117,10 @@ contract LoanEscrow {
         });
 
         _safeTransferFrom(collateralToken, msg.sender, address(this), collateralAmount);
+        _safeTransferFrom(address(usdc), lender, msg.sender, principal - issuanceFee);
+        _safeTransferFrom(address(usdc), lender, house, issuanceFee);
         emit Locked(loanId, msg.sender, lender, collateralToken, collateralAmount);
+        emit Funded(loanId, lender, principal, issuanceFee);
     }
 
     /// On-time repayment: borrower pays principal + interest to the lender and gets collateral

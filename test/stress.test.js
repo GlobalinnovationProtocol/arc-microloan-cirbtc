@@ -37,6 +37,7 @@ function startServer(overrides = {}) {
     kyc: new KycRegistry([LENDER, BORROWER]),
     priceProviders: { cirBTC: async () => ({ closeTime: (t += 60), price: 2 }) },
     verifyLock: async (hash) => hash === "0x" + "a".repeat(64),
+    lenderLiquidity: async () => ({ ok: true }),
     sleep: async () => {},
     escrowAddress: ESCROW,
     ...overrides,

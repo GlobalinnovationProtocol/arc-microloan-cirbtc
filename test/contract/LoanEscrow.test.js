@@ -16,10 +16,11 @@ async function deployFixture() {
   const LoanEscrow = await ethers.getContractFactory("LoanEscrow");
   const escrow = await LoanEscrow.deploy(await usdc.getAddress(), await router.getAddress());
 
-  // Fund the router so it can pay out swap proceeds, and the borrower/lender with what they need.
+  // Fund the router so it can pay out swap proceeds, and the borrower/lender/house with what they need.
   await usdc.mint(await router.getAddress(), ethers.parseUnits("1000000", 6));
   await collateral.mint(await borrower.getAddress(), ethers.parseUnits("10000", 8));
   await usdc.mint(await borrower.getAddress(), ethers.parseUnits("10000", 6));
+  await usdc.mint(await lender.getAddress(), ethers.parseUnits("10000", 6));
   await usdc.mint(await house.getAddress(), ethers.parseUnits("10000", 6));
 
   return { deployer, borrower, lender, house, keeper, usdc, collateral, router, escrow };
@@ -27,6 +28,9 @@ async function deployFixture() {
 
 const DAY = 24 * 60 * 60;
 const RATE_SCALE = 10n ** 10n; // 18 - 8 decimals (see MockDexRouter rate convention)
+const START = ethers.parseUnits("10000", 6);       // USDC each party starts with
+const PRINCIPAL = ethers.parseUnits("1000", 6);
+const FEE = ethers.parseUnits("25", 6);
 
 function loanId(label) {
   return ethers.keccak256(ethers.toUtf8Bytes(label));
@@ -38,32 +42,75 @@ function condition() {
   return { preimage: ethers.hexlify(preimage), hash };
 }
 
-async function lockLoan({ escrow, collateral, borrower, lender, house }, { id, collateralAmount, usdcDue, finishIn = DAY, cancelGrace = 3 * DAY }) {
+async function lockLoan({ escrow, collateral, usdc, borrower, lender, house }, { id, collateralAmount, usdcDue, principal = PRINCIPAL, fee = FEE, finishIn = DAY, cancelGrace = 3 * DAY, lenderApproves = true }) {
   const { preimage, hash } = condition();
   const now = await ethers.provider.getBlock("latest").then((b) => b.timestamp);
   const finishAfter = now + finishIn;
   const cancelAfter = finishAfter + cancelGrace;
 
+  if (lenderApproves) await usdc.connect(lender).approve(await escrow.getAddress(), principal);
   await collateral.connect(borrower).approve(await escrow.getAddress(), collateralAmount);
-  await escrow.connect(borrower).lock(
+  const tx = escrow.connect(borrower).lock(
     id, await collateral.getAddress(), collateralAmount,
-    await lender.getAddress(), await house.getAddress(), usdcDue, hash, finishAfter, cancelAfter,
+    await lender.getAddress(), await house.getAddress(), principal, fee, usdcDue, hash, finishAfter, cancelAfter,
   );
-  return { preimage, finishAfter, cancelAfter };
+  return { preimage, finishAfter, cancelAfter, tx };
 }
 
 describe("LoanEscrow", () => {
+  it("lock funds the loan atomically: collateral in, principal-fee to the borrower, fee to the house, all from the lender's allowance", async () => {
+    const f = await deployFixture();
+    const id = loanId("fund-1");
+    const collateralAmount = ethers.parseUnits("2000", 8);
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+    const { tx } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    await expect(tx).to.emit(f.escrow, "Funded").withArgs(id, await f.lender.getAddress(), PRINCIPAL, FEE);
+
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(START - PRINCIPAL);
+    expect(await f.usdc.balanceOf(await f.borrower.getAddress())).to.equal(START + PRINCIPAL - FEE);
+    expect(await f.usdc.balanceOf(await f.house.getAddress())).to.equal(START + FEE);
+    expect(await f.collateral.balanceOf(await f.escrow.getAddress())).to.equal(collateralAmount);
+  });
+
+  it("lock reverts as a whole when the lender has not approved (or moved out) the principal: no collateral leaves the borrower", async () => {
+    const f = await deployFixture();
+    const id = loanId("unfunded-1");
+    const collateralAmount = ethers.parseUnits("2000", 8);
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+
+    const noAllowance = await lockLoan(f, { id, collateralAmount, usdcDue, lenderApproves: false });
+    await expect(noAllowance.tx).to.be.revertedWith("transferFrom failed");
+
+    await f.usdc.connect(f.lender).approve(await f.escrow.getAddress(), PRINCIPAL);
+    await f.usdc.connect(f.lender).transfer(await f.keeper.getAddress(), START - ethers.parseUnits("500", 6)); // only 500 left
+    const noBalance = await lockLoan(f, { id, collateralAmount, usdcDue, lenderApproves: false });
+    await expect(noBalance.tx).to.be.revertedWith("transferFrom failed");
+
+    expect(await f.collateral.balanceOf(await f.borrower.getAddress())).to.equal(ethers.parseUnits("10000", 8));
+    expect(await f.collateral.balanceOf(await f.escrow.getAddress())).to.equal(0n);
+    expect(Number((await f.escrow.loans(id)).status)).to.equal(0 /* None */);
+  });
+
+  it("lock rejects a fee above the principal, a due below the principal, and lender == borrower", async () => {
+    const f = await deployFixture();
+    const collateralAmount = ethers.parseUnits("2000", 8);
+    const usdcDue = ethers.parseUnits("1013.808219", 6);
+    await expect((await lockLoan(f, { id: loanId("fee-1"), collateralAmount, usdcDue, fee: PRINCIPAL })).tx).to.be.revertedWith("bad principal");
+    await expect((await lockLoan(f, { id: loanId("due-1"), collateralAmount, usdcDue: PRINCIPAL - 1n })).tx).to.be.revertedWith("bad principal");
+    await expect((await lockLoan({ ...f, lender: f.borrower }, { id: loanId("self-1"), collateralAmount, usdcDue })).tx).to.be.revertedWith("lender is borrower");
+  });
+
   it("lock -> repay: lender is paid, collateral returns to the borrower, status is terminal", async () => {
     const f = await deployFixture();
     const id = loanId("repay-1");
     const collateralAmount = ethers.parseUnits("2000", 8);
     const usdcDue = ethers.parseUnits("1013.808219", 6);
-    await lockLoan(f, { id, collateralAmount, usdcDue });
+    await (await lockLoan(f, { id, collateralAmount, usdcDue })).tx;
 
     await f.usdc.connect(f.borrower).approve(await f.escrow.getAddress(), usdcDue);
     await expect(f.escrow.connect(f.borrower).repay(id)).to.emit(f.escrow, "Repaid").withArgs(id);
 
-    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(usdcDue);
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(START - PRINCIPAL + usdcDue);
     expect(await f.collateral.balanceOf(await f.borrower.getAddress())).to.equal(ethers.parseUnits("10000", 8));
 
     await expect(f.escrow.connect(f.borrower).repay(id)).to.be.revertedWith("not locked");
@@ -79,7 +126,8 @@ describe("LoanEscrow", () => {
     const id = loanId("default-excess-1");
     const collateralAmount = ethers.parseUnits("2000", 8); // worth 4000 USDC at rate 2
     const usdcDue = ethers.parseUnits("1013.808219", 6);
-    const { preimage, finishAfter } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    const { preimage, finishAfter, tx } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    await tx;
 
     await ethers.provider.send("evm_setNextBlockTimestamp", [finishAfter + 1]);
     await ethers.provider.send("evm_mine", []);
@@ -89,10 +137,10 @@ describe("LoanEscrow", () => {
     await expect(f.escrow.connect(f.keeper).settle(id, preimage, 0n, path, deadline))
       .to.emit(f.escrow, "Settled");
 
-    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(usdcDue);
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(START - PRINCIPAL + usdcDue);
     const expectedProceeds = ethers.parseUnits("4000", 6);
     const expectedExcess = expectedProceeds - usdcDue;
-    expect(await f.usdc.balanceOf(await f.house.getAddress())).to.equal(ethers.parseUnits("10000", 6) + expectedExcess);
+    expect(await f.usdc.balanceOf(await f.house.getAddress())).to.equal(START + FEE + expectedExcess);
     expect(await f.escrow.deficits(id)).to.equal(0n);
   });
 
@@ -102,7 +150,8 @@ describe("LoanEscrow", () => {
     const id = loanId("default-deficit-1");
     const collateralAmount = ethers.parseUnits("2000", 8); // worth 200 USDC at rate 0.1
     const usdcDue = ethers.parseUnits("1013.808219", 6);
-    const { preimage, finishAfter } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    const { preimage, finishAfter, tx } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    await tx;
 
     await ethers.provider.send("evm_setNextBlockTimestamp", [finishAfter + 1]);
     await ethers.provider.send("evm_mine", []);
@@ -112,7 +161,7 @@ describe("LoanEscrow", () => {
       .to.emit(f.escrow, "DeficitRecorded");
 
     const proceeds = ethers.parseUnits("200", 6);
-    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(proceeds);
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(START - PRINCIPAL + proceeds);
     const shortfall = usdcDue - proceeds;
     expect(await f.escrow.deficits(id)).to.equal(shortfall);
 
@@ -120,7 +169,7 @@ describe("LoanEscrow", () => {
 
     await f.usdc.connect(f.house).approve(await f.escrow.getAddress(), shortfall);
     await expect(f.escrow.connect(f.house).payDeficit(id)).to.emit(f.escrow, "DeficitPaid").withArgs(id, shortfall);
-    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(usdcDue);
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(START - PRINCIPAL + usdcDue);
     expect(await f.escrow.deficits(id)).to.equal(0n);
 
     await expect(f.escrow.connect(f.house).payDeficit(id)).to.be.revertedWith("no deficit");
@@ -131,7 +180,8 @@ describe("LoanEscrow", () => {
     const id = loanId("cancel-1");
     const collateralAmount = ethers.parseUnits("2000", 8);
     const usdcDue = ethers.parseUnits("1013.808219", 6);
-    const { cancelAfter } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    const { cancelAfter, tx } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    await tx;
 
     await expect(f.escrow.cancel(id)).to.be.revertedWith("too early");
 
@@ -148,7 +198,8 @@ describe("LoanEscrow", () => {
     const id = loanId("guard-1");
     const collateralAmount = ethers.parseUnits("2000", 8);
     const usdcDue = ethers.parseUnits("1013.808219", 6);
-    const { preimage, finishAfter } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    const { preimage, finishAfter, tx } = await lockLoan(f, { id, collateralAmount, usdcDue });
+    await tx;
 
     const path = [await f.collateral.getAddress(), await f.usdc.getAddress()];
     await expect(f.escrow.settle(id, preimage, 0n, path, finishAfter + DAY)).to.be.revertedWith("not matured");
@@ -167,14 +218,15 @@ describe("LoanEscrow", () => {
     const id = loanId("dup-1");
     const collateralAmount = ethers.parseUnits("2000", 8);
     const usdcDue = ethers.parseUnits("1013.808219", 6);
-    await lockLoan(f, { id, collateralAmount, usdcDue });
+    await (await lockLoan(f, { id, collateralAmount, usdcDue })).tx;
 
     await f.collateral.mint(await f.borrower.getAddress(), collateralAmount);
     await f.collateral.connect(f.borrower).approve(await f.escrow.getAddress(), collateralAmount);
+    await f.usdc.connect(f.lender).approve(await f.escrow.getAddress(), PRINCIPAL);
     await expect(
       f.escrow.connect(f.borrower).lock(
         id, await f.collateral.getAddress(), collateralAmount,
-        await f.lender.getAddress(), await f.house.getAddress(), usdcDue,
+        await f.lender.getAddress(), await f.house.getAddress(), PRINCIPAL, FEE, usdcDue,
         ethers.keccak256(ethers.randomBytes(32)), (await ethers.provider.getBlock("latest")).timestamp + DAY, (await ethers.provider.getBlock("latest")).timestamp + 4 * DAY,
       ),
     ).to.be.revertedWith("loan exists");

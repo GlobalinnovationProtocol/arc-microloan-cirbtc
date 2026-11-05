@@ -12,7 +12,7 @@ Status: proof of concept configured for Arc Mainnet network metadata. Production
 | Interest | 12 % per year, prorated over 42 days (13.808219 USDC on 1000) |
 | Collateral | cirBTC only (Circle's natively issued bitcoin token on Arc) — loan-to-value 25 % |
 | **KYC** | **Required for every lender (FIFO queue) and every borrower** |
-| Lender order | FIFO, among KYC-approved lenders only |
+| Lender order | FIFO by on-chain USDC approval to the escrow, among KYC-approved lenders whose live allowance **and** balance cover 1000 USDC; others are skipped |
 | Capacity | At most 300 confirmed loans per rolling 24 h (the 301st request gets 503) |
 | Chain | Arc (Circle's EVM-compatible L1, USDC-native gas) |
 
@@ -42,7 +42,7 @@ XRPL has no native escrow analogue that can itself inspect a price and sell coll
 1. Borrower and lender addresses, plus the borrower's chosen collateral symbol, are submitted to `/loan/request`. Secrets (seeds, private keys, mnemonics) are rejected on every route; a request that would legitimately carry a 64-hex-character transaction hash (`/loan/confirm`) is exempted from the private-key-shaped check, since EVM private keys and transaction hashes share that same shape.
 2. Both addresses must be KYC-approved, and the collateral symbol must be `cirBTC` (the only configured token; it is also the default when omitted).
 3. Time and price come from Arc RPC nodes: the block timestamp of the latest block is the time source, and two price samples at least 60 s apart must be within 0.25 %, otherwise no offer is made.
-4. The server returns **unsigned** calldata: lender → borrower 1000 USDC directly, borrower → house 25 USDC, and the `approve` + `lock` pair for the collateral (`buildLockCalldata`). Users sign in their own wallet.
+4. The server returns **unsigned** calldata: the lender's USDC `approve` to the escrow (their revocable FIFO commitment), and the borrower's collateral `approve` + `lock`. `lock()` moves everything in one transaction: collateral into the escrow, 975 USDC lender → borrower, 25 USDC lender → house. A loan can never exist half-done. Users sign in their own wallet.
 5. Once the collateral lock transaction is mined, the borrower submits its hash to `/loan/confirm`; the server re-reads the `Locked` event on-chain and only then starts the 24 h IP limit.
 6. No funds pass through the operator's server. No key or seed exists on it unless the optional keeper key is provisioned (§3), and that key holds no funds and no special contract permission.
 

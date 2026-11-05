@@ -175,16 +175,17 @@ const finishAfter = base + FINISH_AFTER_S;
 const cancelAfter = finishAfter + CANCEL_AFTER_S;
 const loanId = loanIdFromString(`demo-${Date.now()}`);
 
-const { approve: lockApprove, lock } = buildLockCalldata({
+const { lenderApprove, approve: lockApprove, lock } = buildLockCalldata({
   loanId, collateralToken: collateralAddress, collateralAmountWei, lender: lenderAddr, house: houseAddr,
+  principalWei: collateralUnits(terms.principal, USDC_DECIMALS_DEMO), issuanceFeeWei: collateralUnits(terms.issuanceFee, USDC_DECIMALS_DEMO),
   usdcDueWei, conditionHash: condition, finishAfter, cancelAfter, escrowAddress,
 });
+// buildLockCalldata targets the production USDC_ADDRESS; on this local node the lender approves the deployed mock USDC instead.
+await send(`lender approves LoanEscrow for ${money(terms.principal)} USDC (revocable FIFO commitment)`, usdc.connect(lenderSigner).approve(escrowAddress, collateralUnits(terms.principal, USDC_DECIMALS_DEMO)));
 await send("borrower approves LoanEscrow for collateral", borrower.sendTransaction(lockApprove));
-await send(`borrower locks ${terms.collateralAmount} ${DEMO_COLLATERAL_SYMBOL} collateral`, borrower.sendTransaction(lock));
+await send(`borrower locks ${terms.collateralAmount} ${DEMO_COLLATERAL_SYMBOL} -- ATOMIC: collateral in, ${money(terms.principal - terms.issuanceFee)} USDC lender -> borrower, ${money(terms.issuanceFee)} USDC fee lender -> house`, borrower.sendTransaction(lock));
 console.log("  (24 h IP limit starts here, after this validated lock, in the real HTTP server)");
-
-await send(`lender -> borrower ${money(terms.principal)} USDC directly`, usdc.connect(lenderSigner).transfer(borrowerAddr, collateralUnits(terms.principal, USDC_DECIMALS_DEMO)));
-await send(`borrower -> house issuance fee ${money(terms.issuanceFee)} USDC`, usdc.connect(borrower).transfer(houseAddr, collateralUnits(terms.issuanceFee, USDC_DECIMALS_DEMO)));
+void lenderApprove;
 
 const startBalances = {};
 for (const [name, addr] of [["lender", lenderAddr], ["borrower", borrowerAddr], ["house", houseAddr]]) {

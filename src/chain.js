@@ -4,13 +4,14 @@ import { ARC_CHAIN_ID, ARC_RPC_URL, ESCROW_CONTRACT_ADDRESS, USDC_ADDRESS } from
 // Minimal ABI: only the pieces this server needs to encode calls and parse events/receipts.
 // Mirrors contracts/LoanEscrow.sol exactly -- keep in sync if the contract changes.
 export const ESCROW_ABI = [
-  "function lock(bytes32 loanId, address collateralToken, uint256 collateralAmount, address lender, address house, uint256 usdcDue, bytes32 conditionHash, uint64 finishAfter, uint64 cancelAfter)",
+  "function lock(bytes32 loanId, address collateralToken, uint256 collateralAmount, address lender, address house, uint256 principal, uint256 issuanceFee, uint256 usdcDue, bytes32 conditionHash, uint64 finishAfter, uint64 cancelAfter)",
   "function repay(bytes32 loanId)",
   "function settle(bytes32 loanId, bytes32 preimage, uint256 amountOutMinimum, address[] path, uint256 deadline)",
   "function payDeficit(bytes32 loanId)",
   "function cancel(bytes32 loanId)",
   "function loans(bytes32 loanId) view returns (address borrower, address lender, address house, address collateralToken, uint256 collateralAmount, uint256 usdcDue, bytes32 conditionHash, uint64 finishAfter, uint64 cancelAfter, uint8 status)",
   "event Locked(bytes32 indexed loanId, address indexed borrower, address indexed lender, address collateralToken, uint256 collateralAmount)",
+  "event Funded(bytes32 indexed loanId, address indexed lender, uint256 principal, uint256 issuanceFee)",
   "event Repaid(bytes32 indexed loanId)",
   "event Settled(bytes32 indexed loanId, uint256 proceeds)",
 ];
@@ -18,6 +19,9 @@ export const ESCROW_ABI = [
 const ERC20_ABI = [
   "function approve(address spender, uint256 amount) returns (bool)",
   "function transfer(address to, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function balanceOf(address account) view returns (uint256)",
+  "event Approval(address indexed owner, address indexed spender, uint256 value)",
 ];
 
 const escrowInterface = new Interface(ESCROW_ABI);
@@ -56,15 +60,18 @@ export function makePriceProvider(tokenSymbol, provider, fetchImpl) {
   });
 }
 
-// Unsigned calldata for the borrower's wallet to submit: first approve the collateral token,
-// then call lock(). Two transactions because ERC-20 has no atomic "transfer with data" the
-// contract can rely on generically across arbitrary tokens -- same two-step borrowers already
-// expect from any ERC-20 contract interaction.
+// Unsigned calldata. Lender: approve `principal` USDC to the escrow (their revocable FIFO commitment).
+// Borrower: approve the collateral token, then call lock(), which pulls the collateral AND the
+// lender's USDC in one transaction (principal - fee to the borrower, fee to the house).
 export function buildLockCalldata({
-  loanId, collateralToken, collateralAmountWei, lender, house, usdcDueWei, conditionHash, finishAfter, cancelAfter,
-  escrowAddress = ESCROW_CONTRACT_ADDRESS,
+  loanId, collateralToken, collateralAmountWei, lender, house, principalWei, issuanceFeeWei, usdcDueWei,
+  conditionHash, finishAfter, cancelAfter, escrowAddress = ESCROW_CONTRACT_ADDRESS,
 }) {
   return {
+    lenderApprove: {
+      to: USDC_ADDRESS,
+      data: erc20Interface.encodeFunctionData("approve", [escrowAddress, principalWei]),
+    },
     approve: {
       to: collateralToken,
       data: erc20Interface.encodeFunctionData("approve", [escrowAddress, collateralAmountWei]),
@@ -72,10 +79,36 @@ export function buildLockCalldata({
     lock: {
       to: escrowAddress,
       data: escrowInterface.encodeFunctionData("lock", [
-        loanId, collateralToken, collateralAmountWei, lender, house, usdcDueWei, conditionHash, finishAfter, cancelAfter,
+        loanId, collateralToken, collateralAmountWei, lender, house, principalWei, issuanceFeeWei, usdcDueWei,
+        conditionHash, finishAfter, cancelAfter,
       ]),
     },
   };
+}
+
+// An allowance alone is not money: both the allowance to the escrow and the live balance must cover
+// the principal now, otherwise lock() would revert and the borrower would pay gas for nothing.
+export async function lenderLiquidity(lender, principalWei, provider, escrowAddress = ESCROW_CONTRACT_ADDRESS) {
+  const usdc = new Contract(USDC_ADDRESS, ERC20_ABI, provider);
+  const [allowance, balance] = await Promise.all([usdc.allowance(lender, escrowAddress), usdc.balanceOf(lender)]);
+  return { allowance, balance, ok: allowance >= principalWei && balance >= principalWei };
+}
+
+// On-chain FIFO: lenders ordered by their first USDC Approval to the escrow (block, then log index).
+// Revoking (approve 0) or moving funds out simply makes lenderLiquidity() fail, and the lender is skipped.
+export async function fifoLenders(provider, escrowAddress = ESCROW_CONTRACT_ADDRESS, { fromBlock = 0 } = {}) {
+  const logs = await provider.getLogs({
+    address: USDC_ADDRESS,
+    topics: erc20Interface.encodeFilterTopics("Approval", [null, escrowAddress]),
+    fromBlock, toBlock: "latest",
+  });
+  const seen = new Set();
+  const ordered = [];
+  for (const log of logs.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index)) {
+    const { owner } = erc20Interface.parseLog(log).args;
+    if (!seen.has(owner)) { seen.add(owner); ordered.push(owner); }
+  }
+  return ordered;
 }
 
 // Unsigned calldata for on-time repayment: approve USDC, then call repay() (atomically pays the

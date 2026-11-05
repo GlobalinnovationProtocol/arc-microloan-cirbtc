@@ -1,6 +1,5 @@
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
-import { Interface } from "ethers";
 import { IpGuard } from "./guard.js";
 import { KycRegistry } from "./kyc.js";
 import { isAddress, priceIsStable, quote } from "./loan.js";
@@ -8,16 +7,16 @@ import { createCollateralCondition } from "./escrow.js";
 import { LoanSessionStore } from "./loanSession.js";
 import {
   ARC_CHAIN_ID, CLEANUP_INTERVAL_MS, COLLATERAL_SYMBOL, COLLATERAL_TOKENS, ESCROW_CONTRACT_ADDRESS, ESCROW_GRACE_SECONDS, LOAN_REQUEST_TTL_MS,
-  MAX_BODY_BYTES, PRICE_MIN_INTERVAL_SECONDS, TERM_DAYS, USDC_ADDRESS, USDC_DECIMALS,
+  MAX_BODY_BYTES, PRICE_MIN_INTERVAL_SECONDS, PRINCIPAL_USDC, TERM_DAYS, USDC_DECIMALS,
 } from "./params.js";
 import {
-  buildLockCalldata, buildRepaymentCalldata, collateralUnits, getProvider, loadKeeperWallet,
-  loanIdFromString, makePriceProvider, verifyCollateralLock, verifyCollateralTokens,
+  buildLockCalldata, buildRepaymentCalldata, collateralUnits, fifoLenders as chainFifoLenders, getProvider,
+  lenderLiquidity as chainLenderLiquidity, loadKeeperWallet, loanIdFromString, makePriceProvider,
+  verifyCollateralLock, verifyCollateralTokens,
 } from "./chain.js";
 import { runSettlement as runLoanSettlement } from "./settlement/settle.js";
 import { TERMS_TEXT, TERMS_VERSION, termsAccepted } from "./terms.js";
 
-const erc20 = new Interface(["function transfer(address to, uint256 amount)"]);
 
 // process.env.TRUST_PROXY unset: identical to req.socket.remoteAddress (today's behavior). Set to a
 // positive integer N: take the Nth-from-the-right X-Forwarded-For entry (the standard "N proxy hops
@@ -50,6 +49,7 @@ export function createLoanServer({
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   sessions = new LoanSessionStore(), runSettlement,
   escrowAddress = ESCROW_CONTRACT_ADDRESS,
+  lenderLiquidity = null, fifoLenders = null,
 } = {}) {
   if (!isAddress(house)) throw new Error("house address required");
   if (!kyc) throw new Error("KYC registry required in the KYC build");
@@ -121,11 +121,12 @@ export function createLoanServer({
         if (!termsAccepted(body)) {
           return reply(res, 403, { error: "terms of use must be accepted by lender and borrower", termsVersion: TERMS_VERSION });
         }
-        const { lender, borrower, collateralSymbol = COLLATERAL_SYMBOL } = body;
-        if (!isAddress(lender) || !isAddress(borrower) || lender === borrower) {
+        const { borrower, collateralSymbol = COLLATERAL_SYMBOL } = body;
+        let { lender } = body;
+        if (!isAddress(borrower) || (lender !== undefined && (!isAddress(lender) || lender === borrower))) {
           return reply(res, 400, { error: "invalid addresses" });
         }
-        if (!kyc.isApproved(lender) || !kyc.isApproved(borrower)) {
+        if (!kyc.isApproved(borrower) || (lender !== undefined && !kyc.isApproved(lender))) {
           return reply(res, 403, { error: "KYC approval required for lender and borrower" });
         }
         const token = COLLATERAL_TOKENS[collateralSymbol];
@@ -134,8 +135,21 @@ export function createLoanServer({
           return reply(res, 503, { error: `collateral token ${collateralSymbol} not configured yet` });
         }
         if (!escrowAddress) return reply(res, 503, { error: "escrow contract not configured yet" });
+        if (!lenderLiquidity) return reply(res, 503, { error: "lender liquidity source not configured" });
         const priceProvider = priceProviders[collateralSymbol];
         if (!priceProvider) return reply(res, 503, { error: "price source not configured" });
+
+        const principalWei = collateralUnits(PRINCIPAL_USDC, USDC_DECIMALS);
+        if (lender === undefined) {
+          if (!fifoLenders) return reply(res, 503, { error: "FIFO lender source not configured" });
+          for (const candidate of await fifoLenders()) {
+            if (candidate === borrower || !kyc.isApproved(candidate)) continue;
+            if ((await lenderLiquidity(candidate, principalWei)).ok) { lender = candidate; break; }
+          }
+          if (!lender) return reply(res, 409, { error: `no KYC-approved lender with ${PRINCIPAL_USDC} USDC approved and available` });
+        } else if (!(await lenderLiquidity(lender, principalWei)).ok) {
+          return reply(res, 409, { error: `lender has not approved, or does not hold, the ${PRINCIPAL_USDC} USDC principal` });
+        }
 
         const first = await priceProvider();
         let second = await priceProvider();
@@ -148,6 +162,7 @@ export function createLoanServer({
         const terms = quote(second.price);
         const { condition, fulfillment } = createCollateralCondition();
         const collateralAmountWei = collateralUnits(terms.collateralAmount, token.decimals);
+        const issuanceFeeWei = collateralUnits(terms.issuanceFee, USDC_DECIMALS);
         const usdcDueWei = collateralUnits(terms.principal + terms.interest, USDC_DECIMALS);
         const finishAfter = second.closeTime + TERM_DAYS * 24 * 60 * 60;
         const cancelAfter = finishAfter + ESCROW_GRACE_SECONDS;
@@ -157,19 +172,13 @@ export function createLoanServer({
         });
         return reply(res, 200, {
           loanId,
+          lender,
           terms: { ...terms, collateralSymbol },
           unsigned: {
-            lenderToBorrower: {
-              to: USDC_ADDRESS,
-              data: erc20.encodeFunctionData("transfer", [borrower, collateralUnits(terms.principal, USDC_DECIMALS)]),
-            },
-            borrowerFeeToHouse: {
-              to: USDC_ADDRESS,
-              data: erc20.encodeFunctionData("transfer", [house, collateralUnits(terms.issuanceFee, USDC_DECIMALS)]),
-            },
-            lock: buildLockCalldata({
+            ...buildLockCalldata({
               loanId: loanIdFromString(loanId), collateralToken: token.address, collateralAmountWei,
-              lender, house, usdcDueWei, conditionHash: condition, finishAfter, cancelAfter, escrowAddress,
+              lender, house, principalWei, issuanceFeeWei, usdcDueWei,
+              conditionHash: condition, finishAfter, cancelAfter, escrowAddress,
             }),
             repay: buildRepaymentCalldata({ loanId: loanIdFromString(loanId), usdcDueWei, escrowAddress }),
           },
@@ -243,6 +252,8 @@ async function main() {
       loanId: loanIdFromString(session.loanId), borrower: session.borrower, lender: session.lender,
       collateralToken: session.collateralToken, minCollateralAmount: session.collateralAmountWei,
     }, provider),
+    lenderLiquidity: (lender, principalWei) => chainLenderLiquidity(lender, principalWei, provider),
+    fifoLenders: () => chainFifoLenders(provider, ESCROW_CONTRACT_ADDRESS, { fromBlock: Number(process.env.ESCROW_DEPLOY_BLOCK ?? 0) }),
     runSettlement,
   }).listen(Number(process.env.PORT ?? 8080), "127.0.0.1");
 }

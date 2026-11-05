@@ -73,7 +73,7 @@ console.log("  terms:", terms, `| lender due ${money(terms.principal + terms.int
 console.log("\n== FUNDING THE DEMO ACCOUNTS (real testnet USDC from the deployer) ==");
 const f = await fees();
 if ((await provider.getBalance(borrower.address)) < parseUnits("0.3", 18)) await send("gas (native USDC) deployer -> borrower", deployer.sendTransaction({ to: borrower.address, value: parseUnits("0.5", 18), ...f }));
-await send("USDC deployer -> borrower (fee + interest)", usdc.transfer(borrower.address, collateralUnits(terms.issuanceFee + terms.interest, UD), f));
+await send("USDC deployer -> borrower (interest, so it can repay principal + interest)", usdc.transfer(borrower.address, collateralUnits(terms.interest, UD), f));
 if (cfg.collateralIsMock) await send("mint mock cirBTC to borrower", collateral.mint(borrower.address, collateralWei, f));
 else if ((await collateral.balanceOf(borrower.address)) < collateralWei) {
   if ((await collateral.balanceOf(deployer.address)) < collateralWei) throw new Error(`need ${terms.collateralAmount} real cirBTC on ${deployer.address} or ${borrower.address}`);
@@ -81,17 +81,17 @@ else if ((await collateral.balanceOf(borrower.address)) < collateralWei) {
 }
 if (CHOICE !== "1") await send("USDC deployer -> mock router (so it can pay swap proceeds)", usdc.transfer(cfg.router, collateralUnits(Math.ceil(terms.collateralAmount * second.price * 1.2 * 1e6) / 1e6, UD), f));
 
-console.log("\n== QUOTE -> LOCK (production calldata, signed by the borrower) ==");
+console.log("\n== QUOTE -> LOCK (production calldata; lender approves USDC, borrower locks: funding is atomic with the lock) ==");
 const { condition, fulfillment } = createCollateralCondition();
 const base = await latestBlockTime(); const finishAfter = base + FINISH_AFTER_S; const cancelAfter = finishAfter + CANCEL_AFTER_S;
 const loanIdStr = `arc-testnet-${Date.now()}`; const loanId = loanIdFromString(loanIdStr);
-const { approve, lock } = buildLockCalldata({ loanId, collateralToken: cfg.collateral, collateralAmountWei: collateralWei, lender: deployer.address, house: deployer.address, usdcDueWei: dueWei, conditionHash: condition, finishAfter, cancelAfter, escrowAddress: cfg.escrow });
+const principalWei = collateralUnits(terms.principal, UD); const feeWei = collateralUnits(terms.issuanceFee, UD);
+const { lenderApprove, approve, lock } = buildLockCalldata({ loanId, collateralToken: cfg.collateral, collateralAmountWei: collateralWei, lender: deployer.address, house: deployer.address, principalWei, issuanceFeeWei: feeWei, usdcDueWei: dueWei, conditionHash: condition, finishAfter, cancelAfter, escrowAddress: cfg.escrow });
+await send(`lender approves LoanEscrow for ${money(terms.principal)} USDC (revocable FIFO commitment)`, deployer.sendTransaction({ ...lenderApprove, ...f }));
 await send("borrower approves LoanEscrow for cirBTC", borrower.sendTransaction({ ...approve, ...f }));
-const lockReceipt = await send(`borrower locks ${terms.collateralAmount} cirBTC`, borrower.sendTransaction({ ...lock, ...f }));
+const lockReceipt = await send(`borrower locks ${terms.collateralAmount} cirBTC -- ATOMIC: ${money(terms.principal - terms.issuanceFee)} USDC lender -> borrower, ${money(terms.issuanceFee)} fee lender -> house`, borrower.sendTransaction({ ...lock, ...f }));
 const bound = await verifyCollateralLock(lockReceipt.hash, { loanId, borrower: borrower.address, lender: deployer.address, collateralToken: cfg.collateral, minCollateralAmount: collateralWei }, provider);
 console.log(`  server-side verifyCollateralLock(): ${bound ? "OK (Locked event bound to this loan)" : "FAILED"}`);
-await send(`lender -> borrower ${money(terms.principal)} USDC`, usdc.transfer(borrower.address, collateralUnits(terms.principal, UD), f));
-await send(`borrower -> house fee ${money(terms.issuanceFee)} USDC`, usdc.connect(borrower).transfer(deployer.address, collateralUnits(terms.issuanceFee, UD), f));
 
 const start = { lender: await usdc.balanceOf(deployer.address), borrowerCol: await collateral.balanceOf(borrower.address) };
 let outcome;

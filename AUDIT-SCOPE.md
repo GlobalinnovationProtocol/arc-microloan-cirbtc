@@ -6,9 +6,9 @@ Status: proof of concept configured for Arc Mainnet metadata. **Not deployed.** 
 
 | File | Lines | Role |
 |---|---:|---|
-| `contracts/LoanEscrow.sol` | 221 | **The only contract that holds funds.** Immutable, no admin, no upgrade. |
-| `src/server.js` | 251 | HTTP API: `/loan/request`, `/loan/confirm`, `/health`, `/terms`; KYC + IP guard + daily cap |
-| `src/chain.js` | 159 | Calldata builders, `Locked` event verification, repaid-event scan, keeper wallet |
+| `contracts/LoanEscrow.sol` | 233 | **The only contract that holds funds.** Immutable, no admin, no upgrade. |
+| `src/server.js` | 263 | HTTP API: `/loan/request`, `/loan/confirm`, `/health`, `/terms`; KYC + IP guard + daily cap |
+| `src/chain.js` | 209 | Calldata builders, on-chain FIFO (`fifoLenders`) and lender liquidity check, `Locked` event verification, keeper wallet |
 | `src/loan.js` | 79 | Quote and settlement arithmetic (LTV 25 %, fee 2.5 %, 12 %/yr over 42 days) |
 | `src/settlement/settle.js` | 75 | Optional keeper sweep that calls permissionless `settle()` |
 | `src/loanSession.js` | 52 | In-memory loan sessions (TTL 1 h) |
@@ -18,14 +18,14 @@ Status: proof of concept configured for Arc Mainnet metadata. **Not deployed.** 
 | `src/terms.js` | 34 | Terms text and version |
 | `src/kyc.js` | 24 | Allowlist registry |
 | `src/escrow.js` | 12 | Preimage/condition hash |
-| **Production total** | **~1 050** | |
+| **Production total** | **~1 130** | |
 | Test mocks (`contracts/test/*.sol`) | 91 | Not deployed |
-| Tests + demo (`test/`, `poc/`) | ~1 050 | `npm test` 29 pass / 4 live skipped; `npm run test:contract` 6 pass |
+| Tests + demo (`test/`, `poc/`) | ~1 460 | `npm test` 33 pass / 4 live skipped; `npm run test:contract` 9 pass |
 
 ## Audit emphasis, in priority order
 
 1. **`LoanEscrow.sol` - all funds flow here.**
-   - `lock()`: reentrancy guard, `transferFrom` success check, no overwrite of an existing `loanId`, `finishAfter < cancelAfter`.
+   - `lock()`: reentrancy guard, `transferFrom` success checks on all three legs (collateral in, principal−fee lender→borrower, fee lender→house) — funding is atomic with the lock, so no half-done loan state exists; `principal > issuanceFee`, `usdcDue ≥ principal`, lender ≠ borrower, no overwrite of an existing `loanId`, `finishAfter < cancelAfter`.
    - `repay()`: atomicity of lender payment + collateral return; `only borrower`, `term over` boundary (`<=` vs `<`).
    - `settle()`: permissionless; preimage check; path must start with the loan's collateral token and end in USDC; `amountOutMinimum` is caller-supplied (a keeper could pass 0: confirm this is acceptable or add a floor); excess/deficit accounting; router approval residue.
    - `payDeficit()`: house-only, deficit zeroed before transfer.
@@ -37,11 +37,12 @@ Status: proof of concept configured for Arc Mainnet metadata. **Not deployed.** 
 
 3. **Price and liquidity (unresolved integration).** `bestCollateralPrice()` has no production source; `DEX_ROUTER_ADDRESS` is empty. The loan is only as safe as the cirBTC/USDC price feed and pool depth at settlement. Review the two-sample stability rule (60 s, 0.25 %) for manipulation resistance once a real source is wired.
 
-4. **Server trust boundary (`src/server.js`, `src/chain.js`).** Unsigned calldata only, no custody; `verifyCollateralLock()` binds `loanId`, borrower, lender, token and amount to the on-chain `Locked` event before the 24 h IP limit starts; secret-shaped inputs rejected; body limit 4 KB; daily cap 300.
+4. **FIFO and lender liquidity (`src/chain.js` `fifoLenders`, `lenderLiquidity`; `src/server.js`).** The lender's FIFO commitment is their USDC allowance to the escrow (revocable by approving 0). Order = first `Approval` event to the escrow (block, log index). Before quoting, the server checks live `allowance ≥ 1000` **and** `balanceOf ≥ 1000`; a lender who moved funds out is skipped and the next eligible one is taken (`test/fifo.test.js`). Review: event-log completeness (`ESCROW_DEPLOY_BLOCK`), race between the check and `lock()` (harmless: `lock()` reverts atomically), and that no path trusts a lender named in the request without the on-chain check.
+5. **Server trust boundary (`src/server.js`, `src/chain.js`).** Unsigned calldata only, no custody; `verifyCollateralLock()` binds `loanId`, borrower, lender, token and amount to the on-chain `Locked` event before the 24 h IP limit starts; secret-shaped inputs rejected; body limit 4 KB; daily cap 300.
 
-5. **KYC (`src/kyc.js`, `src/kycProviders/didit.js`).** Address allowlist freshness, provider adapter error handling, fail-closed behaviour when the list is missing.
+6. **KYC (`src/kyc.js`, `src/kycProviders/didit.js`).** Address allowlist freshness, provider adapter error handling, fail-closed behaviour when the list is missing.
 
-6. **Keeper (`src/settlement/settle.js`).** Optional; holds gas only. Confirm it cannot be tricked into settling the wrong loan or passing a harmful `amountOutMinimum`.
+7. **Keeper (`src/settlement/settle.js`).** Optional; holds gas only. Confirm it cannot be tricked into settling the wrong loan or passing a harmful `amountOutMinimum`.
 
 ## Out of scope
 `poc/arc-demo.js` (local Hardhat demo), `poc/arc-testnet-demo.js` and `scripts/deploy-arc-testnet.js` (Arc Testnet POC, see `deploy/ARC-TESTNET.md`), `contracts/test/` mocks, `test/`.
