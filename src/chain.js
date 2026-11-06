@@ -1,20 +1,51 @@
-import { Contract, Interface, JsonRpcProvider, keccak256, parseUnits, toUtf8Bytes, Wallet } from "ethers";
+import { Contract, Interface, JsonRpcProvider, keccak256, parseUnits, toUtf8Bytes, verifyTypedData, Wallet } from "ethers";
 import { ARC_CHAIN_ID, ARC_RPC_URL, ESCROW_CONTRACT_ADDRESS, USDC_ADDRESS } from "./params.js";
 
 // Minimal ABI: only the pieces this server needs to encode calls and parse events/receipts.
 // Mirrors contracts/LoanEscrow.sol exactly -- keep in sync if the contract changes.
+const LOAN_TERMS_TUPLE = "(bytes32 loanId, address borrower, address lender, uint256 collateralAmount, uint256 principal, uint256 issuanceFee, uint256 usdcDue, bytes32 conditionHash, uint64 finishAfter, uint64 cancelAfter, uint256 deadline)";
 export const ESCROW_ABI = [
-  "function lock(bytes32 loanId, address collateralToken, uint256 collateralAmount, address lender, address house, uint256 principal, uint256 issuanceFee, uint256 usdcDue, bytes32 conditionHash, uint64 finishAfter, uint64 cancelAfter)",
+  `function lock(${LOAN_TERMS_TUPLE} terms, bytes lenderSignature)`,
   "function repay(bytes32 loanId)",
   "function settle(bytes32 loanId, bytes32 preimage, uint256 amountOutMinimum, address[] path, uint256 deadline)",
   "function payDeficit(bytes32 loanId)",
   "function cancel(bytes32 loanId)",
-  "function loans(bytes32 loanId) view returns (address borrower, address lender, address house, address collateralToken, uint256 collateralAmount, uint256 usdcDue, bytes32 conditionHash, uint64 finishAfter, uint64 cancelAfter, uint8 status)",
+  "function loans(bytes32 loanId) view returns (address borrower, address lender, uint256 collateralAmount, uint256 usdcDue, bytes32 conditionHash, uint64 finishAfter, uint64 cancelAfter, uint8 status)",
+  "function house() view returns (address)",
+  "function collateralToken() view returns (address)",
   "event Locked(bytes32 indexed loanId, address indexed borrower, address indexed lender, address collateralToken, uint256 collateralAmount)",
   "event Funded(bytes32 indexed loanId, address indexed lender, uint256 principal, uint256 issuanceFee)",
   "event Repaid(bytes32 indexed loanId)",
   "event Settled(bytes32 indexed loanId, uint256 proceeds)",
 ];
+
+// EIP-712 terms the lender signs; must match LoanEscrow.LOAN_TERMS_TYPEHASH and its domain (name/version).
+export const LOAN_TERMS_TYPES = {
+  LoanTerms: [
+    { name: "loanId", type: "bytes32" }, { name: "borrower", type: "address" }, { name: "lender", type: "address" },
+    { name: "collateralAmount", type: "uint256" }, { name: "principal", type: "uint256" }, { name: "issuanceFee", type: "uint256" },
+    { name: "usdcDue", type: "uint256" }, { name: "conditionHash", type: "bytes32" }, { name: "finishAfter", type: "uint64" },
+    { name: "cancelAfter", type: "uint64" }, { name: "deadline", type: "uint256" },
+  ],
+};
+
+export function loanTermsDomain(escrowAddress = ESCROW_CONTRACT_ADDRESS, chainId = ARC_CHAIN_ID) {
+  return { name: "LoanEscrow", version: "3", chainId, verifyingContract: escrowAddress };
+}
+
+// What the lender's wallet is asked to sign (eth_signTypedData_v4). BigInts are serialised as strings.
+export function loanTermsTypedData(terms, { escrowAddress, chainId } = {}) {
+  const message = Object.fromEntries(Object.entries(terms).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v]));
+  return { domain: loanTermsDomain(escrowAddress, chainId), types: LOAN_TERMS_TYPES, primaryType: "LoanTerms", message };
+}
+
+export function verifyLenderSignature(terms, signature, { escrowAddress, chainId } = {}) {
+  try {
+    return verifyTypedData(loanTermsDomain(escrowAddress, chainId), LOAN_TERMS_TYPES, terms, signature).toLowerCase() === terms.lender.toLowerCase();
+  } catch {
+    return false;
+  }
+}
 
 const ERC20_ABI = [
   "function approve(address spender, uint256 amount) returns (bool)",
@@ -60,29 +91,27 @@ export function makePriceProvider(tokenSymbol, provider, fetchImpl) {
   });
 }
 
-// Unsigned calldata. Lender: approve `principal` USDC to the escrow (their revocable FIFO commitment).
-// Borrower: approve the collateral token, then call lock(), which pulls the collateral AND the
-// lender's USDC in one transaction (principal - fee to the borrower, fee to the house).
-export function buildLockCalldata({
-  loanId, collateralToken, collateralAmountWei, lender, house, principalWei, issuanceFeeWei, usdcDueWei,
-  conditionHash, finishAfter, cancelAfter, escrowAddress = ESCROW_CONTRACT_ADDRESS,
-}) {
+// Unsigned calldata. Lender: approve `principal` USDC to the escrow (their revocable FIFO commitment)
+// and sign the LoanTerms (off-chain, see loanTermsTypedData). Borrower: approve the collateral token,
+// then call lock(terms, lenderSignature), which pulls the collateral AND the lender's USDC in one
+// transaction (principal - fee to the borrower, fee to the house). house and collateralToken are
+// fixed in the contract, so they are not part of the calldata.
+export function buildLockCalldata({ terms, lenderSignature, collateralToken, escrowAddress = ESCROW_CONTRACT_ADDRESS }) {
   return {
     lenderApprove: {
       to: USDC_ADDRESS,
-      data: erc20Interface.encodeFunctionData("approve", [escrowAddress, principalWei]),
+      data: erc20Interface.encodeFunctionData("approve", [escrowAddress, terms.principal]),
     },
     approve: {
       to: collateralToken,
-      data: erc20Interface.encodeFunctionData("approve", [escrowAddress, collateralAmountWei]),
+      data: erc20Interface.encodeFunctionData("approve", [escrowAddress, terms.collateralAmount]),
     },
-    lock: {
-      to: escrowAddress,
-      data: escrowInterface.encodeFunctionData("lock", [
-        loanId, collateralToken, collateralAmountWei, lender, house, principalWei, issuanceFeeWei, usdcDueWei,
-        conditionHash, finishAfter, cancelAfter,
-      ]),
-    },
+    ...(lenderSignature ? {
+      lock: {
+        to: escrowAddress,
+        data: escrowInterface.encodeFunctionData("lock", [terms, lenderSignature]),
+      },
+    } : {}),
   };
 }
 

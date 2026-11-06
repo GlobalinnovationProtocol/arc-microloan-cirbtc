@@ -7,7 +7,7 @@ import { LenderQueue, priceIsStable, quote, settleDefault } from "../src/loan.js
 import { createCollateralCondition } from "../src/escrow.js";
 import { KycRegistry } from "../src/kyc.js";
 import {
-  buildLockCalldata, buildRepaymentCalldata, collateralUnits, escrowContract, loanIdFromString,
+  buildLockCalldata, buildRepaymentCalldata, collateralUnits, escrowContract, loanIdFromString, loanTermsTypedData,
 } from "../src/chain.js";
 import { PRICE_MIN_INTERVAL_SECONDS } from "../src/params.js";
 
@@ -107,7 +107,7 @@ const collateral = await (await collateralFactory.deploy(COLLATERAL_NAME, `m${DE
 const routerFactory = new ContractFactory(routerArtifact.abi, routerArtifact.bytecode, deployer);
 const router = await (await routerFactory.deploy()).waitForDeployment();
 const escrowFactory = new ContractFactory(escrowArtifact.abi, escrowArtifact.bytecode, deployer);
-const escrow = await (await escrowFactory.deploy(await usdc.getAddress(), await router.getAddress())).waitForDeployment();
+const escrow = await (await escrowFactory.deploy(await usdc.getAddress(), await router.getAddress(), houseAddr, await collateral.getAddress())).waitForDeployment();
 const escrowAddress = await escrow.getAddress();
 const collateralAddress = await collateral.getAddress();
 const usdcAddress = await usdc.getAddress();
@@ -175,17 +175,21 @@ const finishAfter = base + FINISH_AFTER_S;
 const cancelAfter = finishAfter + CANCEL_AFTER_S;
 const loanId = loanIdFromString(`demo-${Date.now()}`);
 
-const { lenderApprove, approve: lockApprove, lock } = buildLockCalldata({
-  loanId, collateralToken: collateralAddress, collateralAmountWei, lender: lenderAddr, house: houseAddr,
-  principalWei: collateralUnits(terms.principal, USDC_DECIMALS_DEMO), issuanceFeeWei: collateralUnits(terms.issuanceFee, USDC_DECIMALS_DEMO),
-  usdcDueWei, conditionHash: condition, finishAfter, cancelAfter, escrowAddress,
-});
+const loanTerms = {
+  loanId, borrower: borrowerAddr, lender: lenderAddr, collateralAmount: collateralAmountWei,
+  principal: collateralUnits(terms.principal, USDC_DECIMALS_DEMO), issuanceFee: collateralUnits(terms.issuanceFee, USDC_DECIMALS_DEMO),
+  usdcDue: usdcDueWei, conditionHash: condition, finishAfter, cancelAfter, deadline: base + 3600,
+};
+const chainId = (await provider.getNetwork()).chainId;
+const typed = loanTermsTypedData(loanTerms, { escrowAddress, chainId });
+const lenderSignature = await lenderSigner.signTypedData(typed.domain, typed.types, typed.message);
+console.log(`  lender signs the exact loan terms (EIP-712): ${lenderSignature.slice(0, 20)}... -- without this, lock() refuses to touch the lender's USDC`);
+const { approve: lockApprove, lock } = buildLockCalldata({ terms: loanTerms, lenderSignature, collateralToken: collateralAddress, escrowAddress });
 // buildLockCalldata targets the production USDC_ADDRESS; on this local node the lender approves the deployed mock USDC instead.
 await send(`lender approves LoanEscrow for ${money(terms.principal)} USDC (revocable FIFO commitment)`, usdc.connect(lenderSigner).approve(escrowAddress, collateralUnits(terms.principal, USDC_DECIMALS_DEMO)));
 await send("borrower approves LoanEscrow for collateral", borrower.sendTransaction(lockApprove));
 await send(`borrower locks ${terms.collateralAmount} ${DEMO_COLLATERAL_SYMBOL} -- ATOMIC: collateral in, ${money(terms.principal - terms.issuanceFee)} USDC lender -> borrower, ${money(terms.issuanceFee)} USDC fee lender -> house`, borrower.sendTransaction(lock));
 console.log("  (24 h IP limit starts here, after this validated lock, in the real HTTP server)");
-void lenderApprove;
 
 const startBalances = {};
 for (const [name, addr] of [["lender", lenderAddr], ["borrower", borrowerAddr], ["house", houseAddr]]) {

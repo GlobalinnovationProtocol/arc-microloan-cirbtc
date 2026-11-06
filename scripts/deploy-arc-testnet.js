@@ -30,12 +30,13 @@ async function main() {
   }
   const router = await (await ethers.getContractFactory("MockDexRouter")).deploy();
   await router.waitForDeployment(); txs.router = router.deploymentTransaction().hash;
-  const escrow = await (await ethers.getContractFactory("LoanEscrow")).deploy(USDC_ADDRESS, await router.getAddress());
+  // v3 constructor: house and collateral token are immutable (deployer acts as house in this POC).
+  const escrow = await (await ethers.getContractFactory("LoanEscrow")).deploy(USDC_ADDRESS, await router.getAddress(), deployer.address, collateral);
   await escrow.waitForDeployment(); txs.escrow = escrow.deploymentTransaction().hash;
 
   const out = {
-    network: "arcTestnet", chainId: 5042002, explorer: EXPLORER, deployedAt: new Date().toISOString(),
-    deployer: deployer.address, usdc: USDC_ADDRESS, collateral, collateralIsMock: !useReal, collateralDecimals: 8,
+    network: "arcTestnet", chainId: 5042002, explorer: EXPLORER, deployedAt: new Date().toISOString(), contractVersion: 3,
+    deployer: deployer.address, house: deployer.address, usdc: USDC_ADDRESS, collateral, collateralIsMock: !useReal, collateralDecimals: 8,
     router: await router.getAddress(), escrow: await escrow.getAddress(), txs,
   };
   writeFileSync(new URL("../deploy/arc-testnet.json", import.meta.url), JSON.stringify(out, null, 2));

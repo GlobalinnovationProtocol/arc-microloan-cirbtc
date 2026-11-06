@@ -7,17 +7,28 @@ import { randomUUID } from "node:crypto";
 export class LoanSessionStore {
   #sessions = new Map();
 
-  create({ lender, borrower, house, collateralSymbol, collateralToken, collateralAmountWei, usdcDueWei, condition, fulfillment, finishAfter, cancelAfter }) {
+  create({
+    lender, borrower, house, collateralSymbol, collateralToken, collateralAmountWei, principalWei, issuanceFeeWei, usdcDueWei,
+    condition, fulfillment, finishAfter, cancelAfter, deadline,
+  }) {
     const loanId = randomUUID();
     this.#sessions.set(loanId, {
-      loanId, lender, borrower, house, collateralSymbol, collateralToken, collateralAmountWei, usdcDueWei,
-      condition, fulfillment, finishAfter, cancelAfter, status: "pending_collateral", createdAt: Date.now(),
+      loanId, lender, borrower, house, collateralSymbol, collateralToken, collateralAmountWei, principalWei, issuanceFeeWei, usdcDueWei,
+      condition, fulfillment, finishAfter, cancelAfter, deadline, lenderSignature: null,
+      status: "pending_collateral", createdAt: Date.now(),
     });
     return loanId;
   }
 
   get(loanId) {
     return typeof loanId === "string" ? this.#sessions.get(loanId) : undefined;
+  }
+
+  setLenderSignature(loanId, signature) {
+    const session = this.#sessions.get(loanId);
+    if (!session || session.status !== "pending_collateral") return false;
+    session.lenderSignature = signature;
+    return true;
   }
 
   markLocked(loanId) {

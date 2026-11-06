@@ -22,10 +22,22 @@ Status: proof of concept configured for Arc Mainnet metadata. **Not deployed.** 
 | Test mocks (`contracts/test/*.sol`) | 91 | Not deployed |
 | Tests + demo (`test/`, `poc/`) | ~1 460 | `npm test` 33 pass / 4 live skipped; `npm run test:contract` 9 pass |
 
+## External finding already received (2026-11-06) and fixed in contract v3
+
+A security firm (KupiaSec) read `AUDIT-SCOPE.md` and `LoanEscrow.sol` v2 and reported, unsolicited: `lock()` took `lender`
+as a bare parameter, so anyone could call the contract directly, name any lender holding a USDC allowance, pass a worthless
+token as collateral and their own address as house, and drain the lender. Confirmed by us; it was introduced by the
+2026-11-05 atomic-funding change. Fix (v3, same day): `lock(LoanTerms, lenderSignature)` requires the lender's EIP-712
+signature over the exact terms (loanId, borrower, lender, amounts, conditionHash, dates, deadline); `house` and
+`collateralToken` are immutable constructor values; `t.borrower == msg.sender`. The signed `conditionHash` also closes the
+"hash with no known preimage" griefing path they mentioned. Regression tests: `test/contract/LoanEscrow.test.js`
+("nobody can spend a lender's allowance without the lender's signature...", "house and collateral token are fixed at
+deployment..."). Please re-verify independently; this is exactly the kind of gap the audit should look for.
+
 ## Audit emphasis, in priority order
 
 1. **`LoanEscrow.sol` - all funds flow here.**
-   - `lock()`: reentrancy guard, `transferFrom` success checks on all three legs (collateral in, principal−fee lender→borrower, fee lender→house) — funding is atomic with the lock, so no half-done loan state exists; `principal > issuanceFee`, `usdcDue ≥ principal`, lender ≠ borrower, no overwrite of an existing `loanId`, `finishAfter < cancelAfter`.
+   - `lock(LoanTerms, lenderSignature)`: EIP-712 digest (`hashLoanTerms`, domain name/version/chainId/contract), `_recover` malleability guards (low-s, v∈{27,28}, non-zero signer), signer == `t.lender`, `t.borrower == msg.sender`, `deadline`, replay (loanId uniqueness + status), reentrancy guard, `transferFrom` success checks on all three legs (collateral in, principal−fee lender→borrower, fee lender→house); `principal > issuanceFee`, `usdcDue ≥ principal`, `finishAfter < cancelAfter`. Immutables `house`, `collateralToken`, `usdc`, `dexRouter`.
    - `repay()`: atomicity of lender payment + collateral return; `only borrower`, `term over` boundary (`<=` vs `<`).
    - `settle()`: permissionless; preimage check; path must start with the loan's collateral token and end in USDC; `amountOutMinimum` is caller-supplied (a keeper could pass 0: confirm this is acceptable or add a floor); excess/deficit accounting; router approval residue.
    - `payDeficit()`: house-only, deficit zeroed before transfer.

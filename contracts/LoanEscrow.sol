@@ -2,14 +2,20 @@
 pragma solidity ^0.8.20;
 
 /// Minimal non-custodial collateral escrow for one fixed-term micro-loan product.
-/// USDC is the loan currency; the collateral token is a per-loan parameter. In this deployment the
-/// house allows exactly one collateral, cirBTC (Circle's natively issued bitcoin token on Arc, an
-/// ERC-20 since Arc's gas is USDC); the parameter stays generic so the audited bytecode is unchanged.
+/// USDC is the loan currency; the collateral token (cirBTC) and the house address are fixed at
+/// deployment, so this single, non-upgradeable, admin-free contract covers exactly one product.
 ///
 /// Design choices, deliberately minimizing attack surface:
 /// - No admin key, no owner, no pausability, no upgradeability: a bug needs a new deployment,
 ///   not a patch -- a disclosed tradeoff in exchange for nothing here ever being able to
 ///   rug/freeze/redirect funds after audit.
+/// - lock() moves the collateral AND the lender's funding in one transaction, so a loan can never
+///   exist half-done. Because the lender's USDC allowance to this contract is what gets pulled, the
+///   lender must have SIGNED these exact loan terms (EIP-712): nobody can name a lender they do not
+///   control, nor spend a lender's allowance on terms the lender never saw. (External report,
+///   2026-11-06: v2 accepted `lender` as a bare parameter -- fixed here.)
+/// - house and collateralToken are immutable: fees cannot be redirected and no foreign token can
+///   be passed as collateral by calling the contract directly.
 /// - settle() is permissionless: any address (a keeper bot, the lender, anyone) can trigger
 ///   default settlement once finishAfter has passed, paying their own gas. No operator hot
 ///   wallet ever custodies loan funds in the common path.
@@ -21,9 +27,8 @@ pragma solidity ^0.8.20;
 ///   approves it -- the human-in-the-loop control, with no separate sign-approval service needed.
 /// - cancel() is a disclosed, deliberate limitation carried over from this project's XRPL
 ///   sibling: if nobody calls settle() before cancelAfter, collateral returns to the
-///   borrower who defaulted, not to the house. Because settle() is permissionless (not gated
-///   behind one operator's automation), this is far less likely to be hit in practice than in
-///   the XRPL design, but the limitation itself is unchanged and must stay disclosed.
+///   borrower who defaulted, not to the house. The lender signs conditionHash as part of the
+///   terms, so a borrower alone cannot pick a hash with no known preimage to force that path.
 contract LoanEscrow {
     enum Status {
         None,
@@ -36,8 +41,6 @@ contract LoanEscrow {
     struct Loan {
         address borrower;
         address lender;
-        address house;
-        address collateralToken;
         uint256 collateralAmount;
         uint256 usdcDue; // principal + interest, fixed at lock time
         bytes32 conditionHash; // keccak256(preimage); mirrors the XRPL build's PREIMAGE-SHA-256 condition
@@ -46,8 +49,31 @@ contract LoanEscrow {
         Status status;
     }
 
+    /// Exact terms the lender signs (EIP-712). loanId is unique per loan (replay-safe together with
+    /// the status check); deadline bounds how long the signature stays usable.
+    struct LoanTerms {
+        bytes32 loanId;
+        address borrower;
+        address lender;
+        uint256 collateralAmount;
+        uint256 principal;
+        uint256 issuanceFee;
+        uint256 usdcDue;
+        bytes32 conditionHash;
+        uint64 finishAfter;
+        uint64 cancelAfter;
+        uint256 deadline;
+    }
+
+    bytes32 public constant LOAN_TERMS_TYPEHASH = keccak256(
+        "LoanTerms(bytes32 loanId,address borrower,address lender,uint256 collateralAmount,uint256 principal,uint256 issuanceFee,uint256 usdcDue,bytes32 conditionHash,uint64 finishAfter,uint64 cancelAfter,uint256 deadline)"
+    );
+    bytes32 public immutable DOMAIN_SEPARATOR;
+
     IERC20 public immutable usdc;
     IDexRouter public immutable dexRouter;
+    address public immutable house;
+    address public immutable collateralToken;
 
     mapping(bytes32 => Loan) public loans;
     mapping(bytes32 => uint256) public deficits;
@@ -69,58 +95,69 @@ contract LoanEscrow {
         _entered = false;
     }
 
-    constructor(address usdcAddress, address dexRouterAddress) {
-        require(usdcAddress != address(0) && dexRouterAddress != address(0), "zero address");
+    constructor(address usdcAddress, address dexRouterAddress, address houseAddress, address collateralTokenAddress) {
+        require(
+            usdcAddress != address(0) && dexRouterAddress != address(0) && houseAddress != address(0) && collateralTokenAddress != address(0),
+            "zero address"
+        );
+        require(collateralTokenAddress != usdcAddress, "collateral is usdc");
         usdc = IERC20(usdcAddress);
         dexRouter = IDexRouter(dexRouterAddress);
+        house = houseAddress;
+        collateralToken = collateralTokenAddress;
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("LoanEscrow"),
+                keccak256("3"),
+                block.chainid,
+                address(this)
+            )
+        );
     }
 
-    /// Borrower locks collateral and the lender's funding settles in the same transaction: the
-    /// borrower must have approved collateralAmount of collateralToken, the lender must have approved
-    /// `principal` USDC to this contract. principal - issuanceFee goes to the borrower and issuanceFee
-    /// to the house. If any leg fails the whole call reverts, so a loan can never exist half-done
-    /// (collateral locked but unfunded, or funded but uncollateralised). The lender's USDC allowance is
-    /// therefore their revocable FIFO commitment: approving 0 withdraws it. loanId is chosen off-chain
-    /// (the server's loan session id) and must be unused.
-    function lock(
-        bytes32 loanId,
-        address collateralToken,
-        uint256 collateralAmount,
-        address lender,
-        address house,
-        uint256 principal,
-        uint256 issuanceFee,
-        uint256 usdcDue,
-        bytes32 conditionHash,
-        uint64 finishAfter,
-        uint64 cancelAfter
-    ) external nonReentrant {
-        require(loans[loanId].status == Status.None, "loan exists");
-        require(collateralToken != address(0) && lender != address(0) && house != address(0), "zero address");
-        require(lender != msg.sender, "lender is borrower");
-        require(collateralAmount > 0 && usdcDue > 0, "zero amount");
-        require(principal > issuanceFee && usdcDue >= principal, "bad principal");
-        require(finishAfter > block.timestamp, "finishAfter in the past");
-        require(cancelAfter > finishAfter, "cancelAfter must follow finishAfter");
+    function hashLoanTerms(LoanTerms calldata t) public view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                LOAN_TERMS_TYPEHASH, t.loanId, t.borrower, t.lender, t.collateralAmount, t.principal, t.issuanceFee,
+                t.usdcDue, t.conditionHash, t.finishAfter, t.cancelAfter, t.deadline
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+    }
 
-        loans[loanId] = Loan({
+    /// Borrower (t.borrower == msg.sender) locks collateral and the lender's funding settles in the
+    /// same transaction. The borrower must have approved t.collateralAmount of collateralToken and the
+    /// lender t.principal USDC to this contract, and lenderSignature must be the lender's EIP-712
+    /// signature over exactly these terms. principal - issuanceFee goes to the borrower, issuanceFee
+    /// to the house. If any leg fails the whole call reverts.
+    function lock(LoanTerms calldata t, bytes calldata lenderSignature) external nonReentrant {
+        require(loans[t.loanId].status == Status.None, "loan exists");
+        require(t.borrower == msg.sender, "borrower must lock");
+        require(t.lender != address(0) && t.lender != msg.sender, "bad lender");
+        require(t.collateralAmount > 0 && t.usdcDue > 0, "zero amount");
+        require(t.principal > t.issuanceFee && t.usdcDue >= t.principal, "bad principal");
+        require(block.timestamp <= t.deadline, "terms expired");
+        require(t.finishAfter > block.timestamp, "finishAfter in the past");
+        require(t.cancelAfter > t.finishAfter, "cancelAfter must follow finishAfter");
+        require(_recover(hashLoanTerms(t), lenderSignature) == t.lender, "bad lender signature");
+
+        loans[t.loanId] = Loan({
             borrower: msg.sender,
-            lender: lender,
-            house: house,
-            collateralToken: collateralToken,
-            collateralAmount: collateralAmount,
-            usdcDue: usdcDue,
-            conditionHash: conditionHash,
-            finishAfter: finishAfter,
-            cancelAfter: cancelAfter,
+            lender: t.lender,
+            collateralAmount: t.collateralAmount,
+            usdcDue: t.usdcDue,
+            conditionHash: t.conditionHash,
+            finishAfter: t.finishAfter,
+            cancelAfter: t.cancelAfter,
             status: Status.Locked
         });
 
-        _safeTransferFrom(collateralToken, msg.sender, address(this), collateralAmount);
-        _safeTransferFrom(address(usdc), lender, msg.sender, principal - issuanceFee);
-        _safeTransferFrom(address(usdc), lender, house, issuanceFee);
-        emit Locked(loanId, msg.sender, lender, collateralToken, collateralAmount);
-        emit Funded(loanId, lender, principal, issuanceFee);
+        _safeTransferFrom(collateralToken, msg.sender, address(this), t.collateralAmount);
+        _safeTransferFrom(address(usdc), t.lender, msg.sender, t.principal - t.issuanceFee);
+        _safeTransferFrom(address(usdc), t.lender, house, t.issuanceFee);
+        emit Locked(t.loanId, msg.sender, t.lender, collateralToken, t.collateralAmount);
+        emit Funded(t.loanId, t.lender, t.principal, t.issuanceFee);
     }
 
     /// On-time repayment: borrower pays principal + interest to the lender and gets collateral
@@ -133,7 +170,7 @@ contract LoanEscrow {
 
         l.status = Status.Repaid;
         _safeTransferFrom(address(usdc), msg.sender, l.lender, l.usdcDue);
-        _safeTransfer(l.collateralToken, l.borrower, l.collateralAmount);
+        _safeTransfer(collateralToken, l.borrower, l.collateralAmount);
         emit Repaid(loanId);
     }
 
@@ -152,18 +189,18 @@ contract LoanEscrow {
         require(l.status == Status.Locked, "not locked");
         require(block.timestamp >= l.finishAfter, "not matured");
         require(keccak256(abi.encodePacked(preimage)) == l.conditionHash, "bad preimage");
-        require(path.length >= 2 && path[0] == l.collateralToken && path[path.length - 1] == address(usdc), "bad path");
+        require(path.length >= 2 && path[0] == collateralToken && path[path.length - 1] == address(usdc), "bad path");
 
         l.status = Status.Settled;
         uint256 collateralAmount = l.collateralAmount;
-        _safeApprove(l.collateralToken, address(dexRouter), collateralAmount);
+        _safeApprove(collateralToken, address(dexRouter), collateralAmount);
         uint256[] memory amounts = dexRouter.swapExactTokensForTokens(collateralAmount, amountOutMinimum, path, address(this), deadline);
         uint256 proceeds = amounts[amounts.length - 1];
 
         if (proceeds >= l.usdcDue) {
             _safeTransfer(address(usdc), l.lender, l.usdcDue);
             uint256 excess = proceeds - l.usdcDue;
-            if (excess > 0) _safeTransfer(address(usdc), l.house, excess);
+            if (excess > 0) _safeTransfer(address(usdc), house, excess);
         } else {
             _safeTransfer(address(usdc), l.lender, proceeds);
             uint256 shortfall = l.usdcDue - proceeds;
@@ -177,7 +214,7 @@ contract LoanEscrow {
     /// shortfall. Caller must have approved this contract for the deficit amount of USDC.
     function payDeficit(bytes32 loanId) external nonReentrant {
         Loan storage l = loans[loanId];
-        require(msg.sender == l.house, "only house");
+        require(msg.sender == house, "only house");
         uint256 amount = deficits[loanId];
         require(amount > 0, "no deficit");
         deficits[loanId] = 0;
@@ -192,8 +229,22 @@ contract LoanEscrow {
         require(l.status == Status.Locked, "not locked");
         require(block.timestamp >= l.cancelAfter, "too early");
         l.status = Status.Cancelled;
-        _safeTransfer(l.collateralToken, l.borrower, l.collateralAmount);
+        _safeTransfer(collateralToken, l.borrower, l.collateralAmount);
         emit Cancelled(loanId);
+    }
+
+    /// Minimal ECDSA recovery with the usual malleability guards (low-s, v in {27, 28}).
+    function _recover(bytes32 digest, bytes calldata signature) private pure returns (address) {
+        require(signature.length == 65, "bad signature length");
+        bytes32 r = bytes32(signature[0:32]);
+        bytes32 s = bytes32(signature[32:64]);
+        uint8 v = uint8(signature[64]);
+        if (v < 27) v += 27;
+        require(v == 27 || v == 28, "bad signature v");
+        require(uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0, "bad signature s");
+        address signer = ecrecover(digest, v, r, s);
+        require(signer != address(0), "bad signature");
+        return signer;
     }
 
     function _safeTransfer(address token, address to, uint256 amount) private {

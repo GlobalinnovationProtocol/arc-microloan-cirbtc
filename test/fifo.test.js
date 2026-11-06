@@ -62,7 +62,9 @@ test("FIFO: a lender who approved first but moved funds out is skipped; the next
     const r = await post(port, { borrower: BORROWER });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.equal(r.json.lender, LENDER_B);
-    assert.ok(r.json.unsigned.lenderApprove && r.json.unsigned.lock, "returns lender approval and atomic lock calldata");
+    assert.ok(r.json.unsigned.lenderApprove && r.json.unsigned.approve, "returns lender USDC approval and borrower collateral approval calldata");
+    assert.equal(r.json.unsigned.lock, undefined, "lock calldata only exists after the lender signs the terms (/loan/lender-sign)");
+    assert.equal(r.json.lenderTypedData.message.lender, LENDER_B, "the EIP-712 terms the lender must sign name the selected lender");
     assert.equal(r.json.unsigned.lenderToBorrower, undefined, "no separate lender transfer: funding is inside lock()");
   });
 });

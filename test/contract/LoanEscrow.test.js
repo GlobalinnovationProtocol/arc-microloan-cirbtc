@@ -1,5 +1,6 @@
 import { expect } from "chai";
 import hre from "hardhat";
+import { LOAN_TERMS_TYPES } from "../../src/chain.js";
 
 const { ethers } = hre;
 
@@ -14,7 +15,7 @@ async function deployFixture() {
   const router = await MockDexRouter.deploy();
 
   const LoanEscrow = await ethers.getContractFactory("LoanEscrow");
-  const escrow = await LoanEscrow.deploy(await usdc.getAddress(), await router.getAddress());
+  const escrow = await LoanEscrow.deploy(await usdc.getAddress(), await router.getAddress(), await house.getAddress(), await collateral.getAddress());
 
   // Fund the router so it can pay out swap proceeds, and the borrower/lender/house with what they need.
   await usdc.mint(await router.getAddress(), ethers.parseUnits("1000000", 6));
@@ -42,19 +43,27 @@ function condition() {
   return { preimage: ethers.hexlify(preimage), hash };
 }
 
-async function lockLoan({ escrow, collateral, usdc, borrower, lender, house }, { id, collateralAmount, usdcDue, principal = PRINCIPAL, fee = FEE, finishIn = DAY, cancelGrace = 3 * DAY, lenderApproves = true }) {
+async function signedTerms({ escrow, borrower, lender }, { id, collateralAmount, usdcDue, principal = PRINCIPAL, fee = FEE, finishIn = DAY, cancelGrace = 3 * DAY, deadlineIn = DAY, signer = lender, lenderAddress }) {
   const { preimage, hash } = condition();
   const now = await ethers.provider.getBlock("latest").then((b) => b.timestamp);
   const finishAfter = now + finishIn;
   const cancelAfter = finishAfter + cancelGrace;
+  const terms = {
+    loanId: id, borrower: await borrower.getAddress(), lender: lenderAddress ?? await lender.getAddress(), collateralAmount,
+    principal, issuanceFee: fee, usdcDue, conditionHash: hash, finishAfter, cancelAfter, deadline: now + deadlineIn,
+  };
+  const domain = { name: "LoanEscrow", version: "3", chainId: (await ethers.provider.getNetwork()).chainId, verifyingContract: await escrow.getAddress() };
+  const signature = await signer.signTypedData(domain, LOAN_TERMS_TYPES, terms);
+  return { terms, signature, preimage, finishAfter, cancelAfter };
+}
 
-  if (lenderApproves) await usdc.connect(lender).approve(await escrow.getAddress(), principal);
-  await collateral.connect(borrower).approve(await escrow.getAddress(), collateralAmount);
-  const tx = escrow.connect(borrower).lock(
-    id, await collateral.getAddress(), collateralAmount,
-    await lender.getAddress(), await house.getAddress(), principal, fee, usdcDue, hash, finishAfter, cancelAfter,
-  );
-  return { preimage, finishAfter, cancelAfter, tx };
+async function lockLoan(f, options) {
+  const { escrow, collateral, usdc, borrower, lender } = f;
+  const { terms, signature, preimage, finishAfter, cancelAfter } = await signedTerms(f, options);
+  if (options.lenderApproves ?? true) await usdc.connect(lender).approve(await escrow.getAddress(), terms.principal);
+  await collateral.connect(borrower).approve(await escrow.getAddress(), terms.collateralAmount);
+  const tx = escrow.connect(borrower).lock(terms, options.signature ?? signature);
+  return { preimage, finishAfter, cancelAfter, tx, terms, signature };
 }
 
 describe("LoanEscrow", () => {
@@ -97,7 +106,44 @@ describe("LoanEscrow", () => {
     const usdcDue = ethers.parseUnits("1013.808219", 6);
     await expect((await lockLoan(f, { id: loanId("fee-1"), collateralAmount, usdcDue, fee: PRINCIPAL })).tx).to.be.revertedWith("bad principal");
     await expect((await lockLoan(f, { id: loanId("due-1"), collateralAmount, usdcDue: PRINCIPAL - 1n })).tx).to.be.revertedWith("bad principal");
-    await expect((await lockLoan({ ...f, lender: f.borrower }, { id: loanId("self-1"), collateralAmount, usdcDue })).tx).to.be.revertedWith("lender is borrower");
+    await expect((await lockLoan({ ...f, lender: f.borrower }, { id: loanId("self-1"), collateralAmount, usdcDue })).tx).to.be.revertedWith("bad lender");
+  });
+
+  it("nobody can spend a lender's allowance without the lender's signature over these exact terms (external report 2026-11-06)", async () => {
+    const f = await deployFixture();
+    const collateralAmount = 1n; // the attack: worthless collateral, real lender allowance
+    const usdcDue = PRINCIPAL;
+    await f.usdc.connect(f.lender).approve(await f.escrow.getAddress(), PRINCIPAL);
+
+    // 1. Attacker (the borrower here) signs as themselves but names the lender: wrong signer.
+    const forged = await lockLoan(f, { id: loanId("forge-1"), collateralAmount, usdcDue, signer: f.borrower, lenderApproves: false });
+    await expect(forged.tx).to.be.revertedWith("bad lender signature");
+
+    // 2. A genuine lender signature for OTHER terms (different loanId) cannot be replayed.
+    const genuine = await signedTerms(f, { id: loanId("real-1"), collateralAmount, usdcDue });
+    const replay = await lockLoan(f, { id: loanId("replay-1"), collateralAmount, usdcDue, signature: genuine.signature, lenderApproves: false });
+    await expect(replay.tx).to.be.revertedWith("bad lender signature");
+
+    // 3. Someone other than terms.borrower cannot submit the lender-signed terms.
+    const stolen = await signedTerms(f, { id: loanId("stolen-1"), collateralAmount, usdcDue });
+    await expect(f.escrow.connect(f.keeper).lock(stolen.terms, stolen.signature)).to.be.revertedWith("borrower must lock");
+
+    // 4. Expired terms are refused even with a valid signature.
+    const expired = await lockLoan(f, { id: loanId("expired-1"), collateralAmount, usdcDue, deadlineIn: -1, lenderApproves: false });
+    await expect(expired.tx).to.be.revertedWith("terms expired");
+
+    expect(await f.usdc.balanceOf(await f.lender.getAddress())).to.equal(START, "lender's USDC untouched");
+    expect(await f.usdc.balanceOf(await f.borrower.getAddress())).to.equal(START);
+  });
+
+  it("house and collateral token are fixed at deployment: lock() has no parameter to redirect fees or pass a foreign token", async () => {
+    const f = await deployFixture();
+    expect(await f.escrow.house()).to.equal(await f.house.getAddress());
+    expect(await f.escrow.collateralToken()).to.equal(await f.collateral.getAddress());
+    const lockFragment = f.escrow.interface.getFunction("lock");
+    const termFields = lockFragment.inputs[0].components.map((c) => c.name);
+    expect(termFields).to.not.include("house");
+    expect(termFields).to.not.include("collateralToken");
   });
 
   it("lock -> repay: lender is paid, collateral returns to the borrower, status is terminal", async () => {
@@ -221,14 +267,7 @@ describe("LoanEscrow", () => {
     await (await lockLoan(f, { id, collateralAmount, usdcDue })).tx;
 
     await f.collateral.mint(await f.borrower.getAddress(), collateralAmount);
-    await f.collateral.connect(f.borrower).approve(await f.escrow.getAddress(), collateralAmount);
-    await f.usdc.connect(f.lender).approve(await f.escrow.getAddress(), PRINCIPAL);
-    await expect(
-      f.escrow.connect(f.borrower).lock(
-        id, await f.collateral.getAddress(), collateralAmount,
-        await f.lender.getAddress(), await f.house.getAddress(), PRINCIPAL, FEE, usdcDue,
-        ethers.keccak256(ethers.randomBytes(32)), (await ethers.provider.getBlock("latest")).timestamp + DAY, (await ethers.provider.getBlock("latest")).timestamp + 4 * DAY,
-      ),
-    ).to.be.revertedWith("loan exists");
+    const again = await lockLoan(f, { id, collateralAmount, usdcDue });
+    await expect(again.tx).to.be.revertedWith("loan exists");
   });
 });

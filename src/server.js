@@ -11,8 +11,8 @@ import {
 } from "./params.js";
 import {
   buildLockCalldata, buildRepaymentCalldata, collateralUnits, fifoLenders as chainFifoLenders, getProvider,
-  lenderLiquidity as chainLenderLiquidity, loadKeeperWallet, loanIdFromString, makePriceProvider,
-  verifyCollateralLock, verifyCollateralTokens,
+  lenderLiquidity as chainLenderLiquidity, loadKeeperWallet, loanIdFromString, loanTermsTypedData, makePriceProvider,
+  verifyCollateralLock, verifyCollateralTokens, verifyLenderSignature,
 } from "./chain.js";
 import { runSettlement as runLoanSettlement } from "./settlement/settle.js";
 import { TERMS_TEXT, TERMS_VERSION, termsAccepted } from "./terms.js";
@@ -48,11 +48,18 @@ export function createLoanServer({
   house, kyc, guard = new IpGuard(), priceProviders = {}, verifyLock,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   sessions = new LoanSessionStore(), runSettlement,
-  escrowAddress = ESCROW_CONTRACT_ADDRESS,
+  escrowAddress = ESCROW_CONTRACT_ADDRESS, chainId = ARC_CHAIN_ID,
   lenderLiquidity = null, fifoLenders = null,
 } = {}) {
   if (!isAddress(house)) throw new Error("house address required");
   if (!kyc) throw new Error("KYC registry required in the KYC build");
+
+  // The exact LoanTerms struct the contract hashes; built from the session so the lender signs what lock() will see.
+  const sessionTerms = (s) => ({
+    loanId: loanIdFromString(s.loanId), borrower: s.borrower, lender: s.lender, collateralAmount: s.collateralAmountWei,
+    principal: s.principalWei, issuanceFee: s.issuanceFeeWei, usdcDue: s.usdcDueWei, conditionHash: s.condition,
+    finishAfter: s.finishAfter, cancelAfter: s.cancelAfter, deadline: s.deadline,
+  });
 
   const server = createServer((req, res) => {
     const ip = clientIp(req);
@@ -71,7 +78,7 @@ export function createLoanServer({
       return reply(res, 200, { version: TERMS_VERSION, text: TERMS_TEXT });
     }
     const route = req.url;
-    if (req.method !== "POST" || (route !== "/loan/request" && route !== "/loan/confirm")) {
+    if (req.method !== "POST" || !["/loan/request", "/loan/lender-sign", "/loan/confirm"].includes(route)) {
       req.resume();
       return reply(res, 404, { error: "not found" });
     }
@@ -99,10 +106,25 @@ export function createLoanServer({
       try {
         const raw = Buffer.concat(chunks).toString("utf8");
         wipe();
-        if (SECRET_WORD_PATTERN.test(raw) || (route !== "/loan/confirm" && SECRET_HEX_PATTERN.test(raw))) {
+        // A 65-byte signature and a tx hash legitimately contain 64-hex runs; everything else is refused.
+        if (SECRET_WORD_PATTERN.test(raw) || (!["/loan/confirm", "/loan/lender-sign"].includes(route) && SECRET_HEX_PATTERN.test(raw))) {
           return reply(res, 400, { error: "secrets are never accepted" });
         }
         const body = JSON.parse(raw);
+
+        if (route === "/loan/lender-sign") {
+          // The lender's EIP-712 consent to the exact terms; without it the contract refuses lock().
+          const session = sessions.get(body.loanId);
+          if (!session || session.status !== "pending_collateral") return reply(res, 409, { error: "unknown or already locked loan" });
+          const terms = sessionTerms(session);
+          if (typeof body.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(body.signature) ||
+              !verifyLenderSignature(terms, body.signature, { escrowAddress, chainId })) {
+            return reply(res, 409, { error: "signature does not match the lender and these loan terms" });
+          }
+          sessions.setLenderSignature(body.loanId, body.signature);
+          const { lock } = buildLockCalldata({ terms, lenderSignature: body.signature, collateralToken: session.collateralToken, escrowAddress });
+          return reply(res, 200, { loanId: body.loanId, lenderSigned: true, unsigned: { lock } });
+        }
 
         if (route === "/loan/confirm") {
           if (!verifyLock) return reply(res, 503, { error: "lock verification not configured" });
@@ -166,20 +188,20 @@ export function createLoanServer({
         const usdcDueWei = collateralUnits(terms.principal + terms.interest, USDC_DECIMALS);
         const finishAfter = second.closeTime + TERM_DAYS * 24 * 60 * 60;
         const cancelAfter = finishAfter + ESCROW_GRACE_SECONDS;
+        const deadline = second.closeTime + Math.floor(LOAN_REQUEST_TTL_MS / 1000);
         const loanId = sessions.create({
-          lender, borrower, house, collateralSymbol, collateralToken: token.address, collateralAmountWei, usdcDueWei,
-          condition, fulfillment, finishAfter, cancelAfter,
+          lender, borrower, house, collateralSymbol, collateralToken: token.address, collateralAmountWei, principalWei, issuanceFeeWei, usdcDueWei,
+          condition, fulfillment, finishAfter, cancelAfter, deadline,
         });
+        const loanTerms = sessionTerms(sessions.get(loanId));
         return reply(res, 200, {
           loanId,
           lender,
           terms: { ...terms, collateralSymbol },
+          // Step 1: lender approves USDC and signs lenderTypedData; step 2: POST /loan/lender-sign returns the lock calldata.
+          lenderTypedData: loanTermsTypedData(loanTerms, { escrowAddress, chainId }),
           unsigned: {
-            ...buildLockCalldata({
-              loanId: loanIdFromString(loanId), collateralToken: token.address, collateralAmountWei,
-              lender, house, principalWei, issuanceFeeWei, usdcDueWei,
-              conditionHash: condition, finishAfter, cancelAfter, escrowAddress,
-            }),
+            ...buildLockCalldata({ terms: loanTerms, collateralToken: token.address, escrowAddress }),
             repay: buildRepaymentCalldata({ loanId: loanIdFromString(loanId), usdcDueWei, escrowAddress }),
           },
         });

@@ -1,5 +1,5 @@
-# Terminal transcript - Arc micro-loan demo (local Hardhat chain), 2026-11-05T18:00Z
-# Same as: .\Run-Demo.ps1 1 / 2 / 3  (production code from src/ and contracts/; lender funding is atomic with lock())
+# Terminal transcript - Arc micro-loan demo (local Hardhat chain), 2026-11-06T16:38Z
+# Same as: .\Run-Demo.ps1 1 / 2 / 3  (production code; lender signs the LoanTerms (EIP-712), funding atomic with lock())
 
 ################ OUTCOME 1 ################
 
@@ -48,8 +48,8 @@ Read this before continuing. By accepting you confirm that you are an adult who 
   LoanEscrow       0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9  (one contract, collateral token is a per-loan parameter)
 
 == LIVE PRICE CHECK (this demo's block-timestamp price feed, same stability rule as production) ==
-  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793901612
-  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793901672
+  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793983113
+  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793983173
   PRICE STABLE: OK
 
 Terms: {
@@ -62,40 +62,41 @@ Terms: {
 
 == FUNDING (mock tokens; Hardhat Network accounts, no real funds) ==
   [VERIFIED] mint borrower collateral
-      block 6, tx 0xd38798de4be18c71fe2ae81e5e60cf170484fdcc027996dd9a8b6890bbc8eedb
+      block 6, tx 0x2da0ca7e36829617bda7d4860ee27734c80e283aeefbc9ad55fbaf9ac0ea3d63
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint borrower USDC for fee+interest
-      block 7, tx 0x3f1444e988d104fbdd9f4e7ccae6b94f4713d2615365a8bbd2217f8aa8d0db15
+      block 7, tx 0xfa29299eb02acf51e7cec52acdadf13f46dbc5445f822534d692a08aed720a57
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint router USDC (so it can pay out swap proceeds on default)
-      block 8, tx 0xe502726168182e8c14f929e7d308440b4d88c7a3c0ceb64a60b297d74bab0ee5
+      block 8, tx 0xcbfc8280f1e2f9a9c61cd18d5de5f736cd873f633f80c61f57230256e57955cd
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint house USDC (so it can cover payDeficit() if the sale falls short)
-      block 9, tx 0x0de88ce22974877cd28662afaddf260ad55d14ac87147bf829e2fd020386790c
+      block 9, tx 0x184f6adad1d3ff53812e5158acb5f5dcbeea41223a8fdd9861201904739030fc
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
 
 == KYC AND FIFO LENDER QUEUE ==
   approved: lender1, lender2, borrower. house/keeper are not approved.
   unapproved address refused from the queue: lender not KYC-approved
   [VERIFIED] mint lender1 principal
-      block 10, tx 0xd79e704c0b7c5e395cbebf7b0dee96ccb93445f5f0616dc736ac2d474c333125
+      block 10, tx 0xb2ce487d2f5c5e1b6b9dbeadedbb6c989710069daed6be088fe322f2a3907ef9
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   lender1 funded 1000.000000 USDC -> FIFO rank #1
   [VERIFIED] mint lender2 principal
-      block 11, tx 0x92a224634176329713680e2abc068c7cd8cb0de44c2cfb6f8308ce67098c78bb
+      block 11, tx 0x2d2efc32ddba1cbf7fd11ed20790ebdf928d0ba9997eef2294d8051552aba840
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   lender2 funded 1000.000000 USDC -> FIFO rank #2
   rank #1 serves the loan: lender1 (0x90f79bf6eb2c4f870365e785982e1f101e93b906); 1 still waiting
 
 == QUOTE -> LOCK (the exact unsigned payloads /loan/request returns, signed and sent here by the demo wallets) ==
+  lender signs the exact loan terms (EIP-712): 0x610bebc97e5c858838... -- without this, lock() refuses to touch the lender's USDC
   [VERIFIED] lender approves LoanEscrow for 1000.000000 USDC (revocable FIFO commitment)
-      block 12, tx 0x3fa90bc54a546ea50d73f5ef760f099cfbc53b4cc54d9e1b312bb51b80a5a8d1
+      block 12, tx 0x0f409f60c29da31a337091e72f22dcdccff515d9b74c8cf548a59319245fdb4e
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] borrower approves LoanEscrow for collateral
-      block 13, tx 0x12aa523dfd7c24cd4295515be8f5b873160c96c009238b634c598628bad5317b
+      block 13, tx 0x13c1d2c6a27db4169e4b3350d341b10cf781c9a1aa22674ac2e48f2b8f8465dc
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] borrower locks 0.066667 cirBTC -- ATOMIC: collateral in, 975.000000 USDC lender -> borrower, 25.000000 USDC fee lender -> house
-      block 14, tx 0x7baf9cea14e9273445eaf8b4dafca971cd6af967cb219b51675a900c28663b7b
+      block 14, tx 0x742a6c38d4c9d427d97a8359256093d96bac4f68b6e440d941fa03866e30cc66
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   (24 h IP limit starts here, after this validated lock, in the real HTTP server)
 
@@ -104,10 +105,10 @@ Outcome at the term:
   2) Default, sale in DEFICIT (house pays the difference)
   3) Default, sale with EXCESS (house keeps it)
   [VERIFIED] borrower approves LoanEscrow for repayment
-      block 15, tx 0xa42705d8bc9434c1fc69a68cb8ea5dc5d42cdbe8d203bf6e2ee8f8773f71b4a5
+      block 15, tx 0x4d70e05e97b695847ea05ab87373b8c90a6f75ed3f47cfa06806f50b3dfbdf19
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] borrower repays 1013.808219 USDC (principal + interest) -- atomic: lender paid and collateral returned in one call
-      block 16, tx 0xb9958ac3064d858a33eb77f3f5708706a9fc729d38ac150d4db25873c9e72f29
+      block 16, tx 0x4770466267e3b261cf6d51d2afbf7f059ed1b87fbb3ad9fbb8e71135c6e4c5a0
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
 
 == FINAL BALANCES (re-read on-chain; mock USDC) ==
@@ -170,8 +171,8 @@ Read this before continuing. By accepting you confirm that you are an adult who 
   LoanEscrow       0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82  (one contract, collateral token is a per-loan parameter)
 
 == LIVE PRICE CHECK (this demo's block-timestamp price feed, same stability rule as production) ==
-  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793901690
-  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793901750
+  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793983190
+  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793983251
   PRICE STABLE: OK
 
 Terms: {
@@ -184,40 +185,41 @@ Terms: {
 
 == FUNDING (mock tokens; Hardhat Network accounts, no real funds) ==
   [VERIFIED] mint borrower collateral
-      block 22, tx 0x6ba161c4a189f219af404587e2a1129972aeb250196842a1984d83c79690e55c
+      block 22, tx 0xf94eff9e0ec7801acc9db066ae055d282ad560207d48caf7c5df152f5aa5e449
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint borrower USDC for fee+interest
-      block 23, tx 0x55947c9047b0901e8e46baca046cdf0137f93fa87cdc968e21b28fdab864de0a
+      block 23, tx 0x461f6c862e94e120a0aabd6e084a3df989d35a7fab91a6004190e8d6a1ab66c9
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint router USDC (so it can pay out swap proceeds on default)
-      block 24, tx 0x916931e8b115a7bf02549fc9d45d5b9873a03e07d507c975a225859e48a79c55
+      block 24, tx 0x2b6d2518d8f140f18e942e8c54d5286ac26e8c0cbbc74b0b32b5fda90917b339
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint house USDC (so it can cover payDeficit() if the sale falls short)
-      block 25, tx 0x561bfa7844b62041db94541731a5b663c06b7dcc1d32f2eee5e1a3997460c93d
+      block 25, tx 0xf3e1040c98ed59d452dca9ac18e59881f50bdb579483aaf9d6fd459fab768ac2
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
 
 == KYC AND FIFO LENDER QUEUE ==
   approved: lender1, lender2, borrower. house/keeper are not approved.
   unapproved address refused from the queue: lender not KYC-approved
   [VERIFIED] mint lender1 principal
-      block 26, tx 0x4eee87693bcbec72f72c6e8d93c6ca7008d95041b66fa83beaec3445989b1c20
+      block 26, tx 0x0e026fea4740ff10c45a44963b114c9a50b0ee1d6c610cf18072dd91c3a3c6cd
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   lender1 funded 1000.000000 USDC -> FIFO rank #1
   [VERIFIED] mint lender2 principal
-      block 27, tx 0x4b302fc7efdb5b49072aeb5ae602001fed50afb342f4cceefbd564e1ec801e26
+      block 27, tx 0x400028c834222ba578830350f0d0613cd6d1f60a65192927e7fe2c929c337d32
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   lender2 funded 1000.000000 USDC -> FIFO rank #2
   rank #1 serves the loan: lender1 (0x90f79bf6eb2c4f870365e785982e1f101e93b906); 1 still waiting
 
 == QUOTE -> LOCK (the exact unsigned payloads /loan/request returns, signed and sent here by the demo wallets) ==
+  lender signs the exact loan terms (EIP-712): 0x81243ab79f3314bf8c... -- without this, lock() refuses to touch the lender's USDC
   [VERIFIED] lender approves LoanEscrow for 1000.000000 USDC (revocable FIFO commitment)
-      block 28, tx 0x0cc68396e068464c1a7a706fd92486a8b90b4eccc4198b53d5df2b3e7fc3ed29
+      block 28, tx 0x11b9de1d0493c522372897aedaa7713f8e899ed701675f2508689bdeb09ef9e0
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] borrower approves LoanEscrow for collateral
-      block 29, tx 0x99dd78e7f1cb44ccc368d2d802ad7885f130cd6a5185ec35e73d6b606ffc946e
+      block 29, tx 0x99789115826bb0a2ff06c0b6e5dc39b199de4e7aea0c827cdf585f0132a4998f
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] borrower locks 0.066667 cirBTC -- ATOMIC: collateral in, 975.000000 USDC lender -> borrower, 25.000000 USDC fee lender -> house
-      block 30, tx 0xe9929ee6a607be75b327046e70ba27c789f743b993e5e3dfc12b8a00dd515369
+      block 30, tx 0xefe4b4b2dd997f076d5fe03b96a11322555a7a17a9d0450a19dcc00d46257cb2
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   (24 h IP limit starts here, after this validated lock, in the real HTTP server)
 
@@ -233,20 +235,21 @@ Default. Modelled on-chain sale price 12000.000000 (-80% vs quoted) on 0.066667 
     House keeps the excess     0.000000
     Borrower receives          0.000000  (collateral is lost; the loan principal is not repaid)
   [VERIFIED] set mock DEX rate so the swap clears at ~12000.000000 USDC per cirBTC
-      block 31, tx 0xeb6ce62218bd2dc485a222d78d144240d3f8a1870bbcd4bc9c6b5399852f7074
+      block 31, tx 0x788c41c148fcba6364a03716e0e8ab5856fc822342e6b06220bf439c450586f1
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   finish-after: 16s of simulated time remaining
   finish-after: 11s of simulated time remaining
   finish-after: 6s of simulated time remaining
+  finish-after: 1s of simulated time remaining
   [VERIFIED] settle() -- permissionless: this demo's "keeper" account pays gas only, holds no funds, has no special contract permission
-      block 35, tx 0xdaac7ae69183e961798eac394a6ecf143af8b108babb42fa8690514537696223
+      block 36, tx 0xebb5c9edd059a5b38b8045001734a019ccf915c2e7d81e04968d62aa7be848ae
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   DeficitRecorded: 213.804219 USDC owed by the house
   [VERIFIED] house approves LoanEscrow for the deficit
-      block 36, tx 0x3adaa0c52616221624868282ea9fec64790db9c8d5e65f47ee37a8aabf10fea0
+      block 37, tx 0x46f288df77541799e550be3bf71bcdd8c3bc5b4c80cdeaa5e9653124fcc81510
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] house pays the deficit (payDeficit) -- the human-in-the-loop control
-      block 37, tx 0xbfb677dc67ee001771d5608ce40c95fe07d299a923378bd02c01efd6e3c79201
+      block 38, tx 0x8299754b62a49798733788ed2db2b49fcb5bc424898eafabe7e5654fd13cc324
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
 
 == FINAL BALANCES (re-read on-chain; mock USDC) ==
@@ -311,8 +314,8 @@ Read this before continuing. By accepting you confirm that you are an adult who 
   LoanEscrow       0xa85233C63b9Ee964Add6F2cffe00Fd84eb32338f  (one contract, collateral token is a per-loan parameter)
 
 == LIVE PRICE CHECK (this demo's block-timestamp price feed, same stability rule as production) ==
-  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793901786
-  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793901846
+  Sample 1: 60000.000000 USDC/cirBTC @ block time 1793983287
+  Sample 2: 60000.000000 USDC/cirBTC @ block time 1793983347
   PRICE STABLE: OK
 
 Terms: {
@@ -325,40 +328,41 @@ Terms: {
 
 == FUNDING (mock tokens; Hardhat Network accounts, no real funds) ==
   [VERIFIED] mint borrower collateral
-      block 43, tx 0x115c7693a6c6621020c11876409f0cf7102e278a26cd58bd03645db6f1bb2782
+      block 44, tx 0xc0b6f53fcc9726f5d6de25472da6aa8067382562358650be755c29195b88bb0d
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint borrower USDC for fee+interest
-      block 44, tx 0x760cf046feab729bec134c96c271d19ffe48f5d024db32d6fc8e8ffcea4f265c
+      block 45, tx 0x1afd3aa4e89e9bbc4c6d1f4fc735bc9bc1c8b0b6701840eed9cba7bdb6d13d1f
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint router USDC (so it can pay out swap proceeds on default)
-      block 45, tx 0x599120dbd065a5ceb4100bc19f99eac0c0273c90db8d4259fc50ed1efe1de1ed
+      block 46, tx 0xdf52f64d6b65ff3bcf2e2f462b149e72d4b4504030af7b572a5001ec6af22cec
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] mint house USDC (so it can cover payDeficit() if the sale falls short)
-      block 46, tx 0x1c240f3f8a847c83aa1fa2567a0bab47877aa2196e42f884207d9aa16b385df9
+      block 47, tx 0x72ea2e2a0548358cf2cc18195ced14802f46c55d8c7d4f4aa5cba65484eeaec2
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
 
 == KYC AND FIFO LENDER QUEUE ==
   approved: lender1, lender2, borrower. house/keeper are not approved.
   unapproved address refused from the queue: lender not KYC-approved
   [VERIFIED] mint lender1 principal
-      block 47, tx 0x52688839507c77b202a26555a250dab04730f79aef8f473d92be2336f292da4c
+      block 48, tx 0x8ee7cf6b25927f8e9304141b64a58ca62ff6bd2b52103a197853eb767f9ff7cb
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   lender1 funded 1000.000000 USDC -> FIFO rank #1
   [VERIFIED] mint lender2 principal
-      block 48, tx 0xd2d3010d8c3a1b3d0a2d17a8c2f4b203cd97b3362604c018305478eefe8506ae
+      block 49, tx 0x03aa379602278577aef14d8a6de7fe0b25a272ea40e21cf9afb267e64d5263f3
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   lender2 funded 1000.000000 USDC -> FIFO rank #2
   rank #1 serves the loan: lender1 (0x90f79bf6eb2c4f870365e785982e1f101e93b906); 1 still waiting
 
 == QUOTE -> LOCK (the exact unsigned payloads /loan/request returns, signed and sent here by the demo wallets) ==
+  lender signs the exact loan terms (EIP-712): 0xd7ce9ab808d9d88242... -- without this, lock() refuses to touch the lender's USDC
   [VERIFIED] lender approves LoanEscrow for 1000.000000 USDC (revocable FIFO commitment)
-      block 49, tx 0x90dc03c68622451a306a2c16320b7493155e5769c0fc80878d5284871dcedd5f
+      block 50, tx 0x7f431b7a4c8febab92a0d8143e773ef1f3e7f2926f86e1b8ac93ebd52911b0fa
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] borrower approves LoanEscrow for collateral
-      block 50, tx 0x5ec5338f7aada25b63b25d5111e10f5f62ddf7b4f2e809030462f9b12926db57
+      block 51, tx 0x1b3f00b73a41b1330ae1052d718cac23607e71e785e3cc65e1593e79a47230ea
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   [VERIFIED] borrower locks 0.066667 cirBTC -- ATOMIC: collateral in, 975.000000 USDC lender -> borrower, 25.000000 USDC fee lender -> house
-      block 51, tx 0x6dbab782426c06556bdd3e1ed951225449062dbdc42b3bd1dc2a40a58bcf8dfb
+      block 52, tx 0x6f3d0bf1bedff79e86ad2c3eeefdf61f5654d9284edc9489a6a062ee81a87a75
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   (24 h IP limit starts here, after this validated lock, in the real HTTP server)
 
@@ -374,14 +378,14 @@ Default. Modelled on-chain sale price 66000.000000 (+10% vs quoted) on 0.066667 
     House keeps the excess     3386.213781
     Borrower receives          0.000000  (collateral is lost; the loan principal is not repaid)
   [VERIFIED] set mock DEX rate so the swap clears at ~66000.000000 USDC per cirBTC
-      block 52, tx 0x385f51a53a7d59706074802586835c8ec02698a2c1109f37429cfeca91e35084
+      block 53, tx 0x9dc97015e708273f47488d55be1ba4e5d0dedb7c29a21a72d04f321b53d6c62d
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
   finish-after: 16s of simulated time remaining
   finish-after: 11s of simulated time remaining
   finish-after: 6s of simulated time remaining
   finish-after: 1s of simulated time remaining
   [VERIFIED] settle() -- permissionless: this demo's "keeper" account pays gas only, holds no funds, has no special contract permission
-      block 57, tx 0x8f933b359bda35473b9cda236bc486f173bdb8a3b69cfa8d6589e6aed44fb17a
+      block 58, tx 0xe39943f4324d2a73a6923fd35c1ab69b64310c01ac1f701f0e0965a116ca9251
       (local Hardhat node -- no public explorer; Arc mainnet explorer URL is an unverified placeholder, see src/params.js ARC_EXPLORER_TX_URL)
 
 == FINAL BALANCES (re-read on-chain; mock USDC) ==
